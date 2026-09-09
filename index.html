@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HitTrax Progress Tracker</title>
+<meta name="theme-color" content="#0b1220">
+<style>
+:root{
+  --bg:#0b1220; --bg2:#111b2e; --card:#16233c; --card2:#1d2c49;
+  --line:#27395c; --txt:#e9eefb; --dim:#93a4c6; --dim2:#6c7fa5;
+  --orange:#FA4616; --blue:#3d6df0; --green:#2fbf71; --red:#ef4d5a; --amber:#f2b13c;
+  --r:14px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#0b1220,#0d1526 60%,#0b1220);color:var(--txt);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-text-size-adjust:100%;padding-bottom:60px}
+h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.02em}
+a{color:var(--blue)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 14px}
+
+header{position:sticky;top:0;z-index:30;background:rgba(11,18,32,.92);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line)}
+.hd{display:flex;align-items:center;gap:12px;padding:12px 0}
+.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--orange),#ff8a3d);
+  display:grid;place-items:center;font-size:19px;flex:none}
+.hd h1{font-size:18px}
+.hd .sub{font-size:12px;color:var(--dim);margin-top:1px}
+.hd .who{margin-left:auto;text-align:right;font-size:12px;color:var(--dim)}
+.hd .who b{display:block;color:var(--txt);font-size:14px}
+nav{display:flex;gap:4px;overflow-x:auto;padding:0 0 8px;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav button{flex:none;background:transparent;border:1px solid transparent;color:var(--dim);
+  padding:7px 13px;border-radius:999px;font-size:13.5px;font-weight:600;cursor:pointer}
+nav button.on{background:var(--card2);border-color:var(--line);color:var(--txt)}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:14px 0}
+.card h2{font-size:15px;margin-bottom:2px}
+.card .hint{font-size:12.5px;color:var(--dim);margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.grid{display:grid;gap:12px}
+label{display:block;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim2);
+  font-weight:700;margin-bottom:4px}
+input,select,textarea{width:100%;background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+  border-radius:9px;padding:9px 10px;font:inherit;font-size:15px}
+input:focus,select,textarea:focus{outline:2px solid rgba(61,109,240,.5);outline-offset:0}
+textarea{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;min-height:150px;resize:vertical}
+.f{flex:1 1 130px;min-width:0}
+button.btn{background:var(--orange);border:0;color:#fff;font-weight:700;padding:10px 16px;border-radius:10px;
+  font-size:14.5px;cursor:pointer}
+button.btn.sec{background:var(--card2);color:var(--txt);border:1px solid var(--line)}
+button.btn.ghost{background:transparent;color:var(--dim);border:1px solid var(--line)}
+button.btn:active{transform:translateY(1px)}
+.seg{display:inline-flex;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button{background:transparent;border:0;color:var(--dim);padding:6px 12px;border-radius:7px;font-size:13px;
+  font-weight:600;cursor:pointer}
+.seg button.on{background:var(--orange);color:#fff}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.tile{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px}
+.tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim2);font-weight:700}
+.tile .v{font-size:26px;font-weight:800;letter-spacing:-.03em;margin-top:3px;font-variant-numeric:tabular-nums}
+.tile .v small{font-size:13px;font-weight:600;color:var(--dim);margin-left:2px}
+.tile .d{font-size:12px;font-weight:700;margin-top:2px}
+.up{color:var(--green)} .down{color:var(--red)} .flat{color:var(--dim2)}
+.pb{display:inline-block;background:rgba(250,70,22,.16);color:#ff9a6b;border:1px solid rgba(250,70,22,.4);
+  font-size:10px;font-weight:800;padding:1px 6px;border-radius:999px;letter-spacing:.05em;margin-left:6px;
+  vertical-align:middle}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim2);
+  font-weight:700;padding:8px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 8px;border-bottom:1px solid rgba(39,57,92,.55);font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.clickable{cursor:pointer}
+tr.clickable:hover td{background:var(--card2)}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+.bar{height:8px;background:var(--bg2);border-radius:99px;overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--orange),#ffa05c)}
+.chip{display:inline-block;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;
+  background:var(--card2);border:1px solid var(--line);color:var(--dim)}
+.chip.g{background:rgba(47,191,113,.15);color:#7fe0ab;border-color:rgba(47,191,113,.35)}
+.chip.a{background:rgba(242,177,60,.15);color:#f7ce85;border-color:rgba(242,177,60,.35)}
+.chip.r{background:rgba(239,77,90,.15);color:#ff9aa2;border-color:rgba(239,77,90,.35)}
+.empty{text-align:center;color:var(--dim);padding:34px 10px}
+.empty .big{font-size:40px;margin-bottom:8px}
+.note{background:rgba(61,109,240,.09);border:1px solid rgba(61,109,240,.3);border-radius:10px;padding:10px 12px;
+  font-size:13px;color:#bcd0ff}
+.warn{background:rgba(242,177,60,.1);border-color:rgba(242,177,60,.35);color:#f7d9a5}
+ul.tight{margin:8px 0 0;padding-left:18px;font-size:13.5px}
+ul.tight li{margin:5px 0}
+svg{display:block;max-width:100%}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin-top:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+dialog{border:1px solid var(--line);background:var(--card);color:var(--txt);border-radius:16px;padding:0;
+  max-width:760px;width:calc(100% - 24px)}
+dialog::backdrop{background:rgba(4,8,16,.7)}
+.dlg-hd{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.dlg-bd{padding:16px;max-height:74vh;overflow:auto}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+@media print{
+  body{background:#fff;color:#000}
+  header,nav,.noprint{display:none!important}
+  .card{border-color:#ccc;background:#fff;break-inside:avoid}
+  .tile{background:#f4f4f4;border-color:#ddd}
+  .k,.dim,.hint{color:#555!important}
+  .v,td,th,h1,h2,h3{color:#000!important}
+}
+</style>
+</head>
+<body>
+
+<header>
+ <div class="wrap">
+  <div class="hd">
+   <div class="logo">⚾</div>
+   <div>
+     <h1>HitTrax Progress Tracker</h1>
+     <div class="sub" id="hdSub">Session-by-session hitting development</div>
+   </div>
+   <div class="who" id="who"></div>
+  </div>
+  <nav id="nav"></nav>
+ </div>
+</header>
+
+<main class="wrap" id="view"></main>
+
+<dialog id="dlg"><div class="dlg-hd"><h2 id="dlgTitle">Session</h2>
+  <button class="btn ghost" style="margin-left:auto;padding:6px 12px" onclick="dlg.close()">Close</button></div>
+  <div class="dlg-bd" id="dlgBody"></div></dialog>
+
+<script>
+/* ============================== storage ============================== */
+const KEY='hittrax.tracker.v1';
+const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
+const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],goals:[]});
+let DB=load();
+function load(){try{const r=localStorage.getItem(KEY);return r?Object.assign(blank(),JSON.parse(r)):blank()}catch(e){return blank()}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){alert('Could not save: '+e.message)}}
+
+/* ============================== reference data ============================== */
+// Max exit-velocity reference ranges (controlled/tee work). Sources: Bat Digest & Baseball Mode age charts.
+const BENCH=[
+ {label:'8–9',   min:8, max:9,  avg:[35,45], good:[46,55], elite:53},
+ {label:'10–11', min:10,max:11, avg:[45,58], good:[58,65], elite:65},
+ {label:'12',    min:12,max:12, avg:[55,65], good:[66,72], elite:73},
+ {label:'13–14', min:13,max:14, avg:[62,75], good:[76,82], elite:83},
+ {label:'15–16', min:15,max:16, avg:[72,85], good:[86,91], elite:92},
+ {label:'17–18', min:17,max:18, avg:[78,89], good:[89,94], elite:95},
+ {label:'College',min:19,max:22,avg:[87,95], good:[96,100],elite:101},
+ {label:'Pro',   min:23,max:99, avg:[87,95], good:[93,100],elite:105},
+];
+function bench(age){age=+age; if(!age) return null; return BENCH.find(b=>age>=b.min&&age<=b.max)||null;}
+// default hard-hit threshold ≈ the "good" floor for that age
+function hardHitDefault(age){const b=bench(age); return b?b.good[0]:85;}
+function HH(){return +(DB.settings.hardHit||hardHitDefault(DB.player.age));}
+
+/* ============================== metric definitions ============================== */
+const M=[
+ {k:'maxEV',   n:'Max Exit Velo',      u:'mph', d:1, dir:'up'},
+ {k:'avgEV',   n:'Avg Exit Velo',      u:'mph', d:1, dir:'up'},
+ {k:'topEV',   n:'Top-25% Avg EV',     u:'mph', d:1, dir:'up'},
+ {k:'hha',     n:'Hard-Hit Avg',       u:'%',   d:0, dir:'up'},
+ {k:'barrel',  n:'Barrel %',           u:'%',   d:0, dir:'up'},
+ {k:'avgLA',   n:'Avg Launch Angle',   u:'°',   d:1, dir:'win', win:[10,20]},
+ {k:'sweet',   n:'Sweet-Spot LA %',    u:'%',   d:0, dir:'up'},
+ {k:'ld',      n:'Line Drive %',       u:'%',   d:0, dir:'up'},
+ {k:'gb',      n:'Ground Ball %',      u:'%',   d:0, dir:'down'},
+ {k:'fb',      n:'Fly Ball %',         u:'%',   d:0, dir:'flat'},
+ {k:'pu',      n:'Pop-Up %',           u:'%',   d:0, dir:'down'},
+ {k:'maxDist', n:'Max Distance',       u:'ft',  d:0, dir:'up'},
+ {k:'avgDist', n:'Avg Distance',       u:'ft',  d:0, dir:'up'},
+ {k:'ba',      n:'Batting Avg',        u:'',    d:3, dir:'up'},
+ {k:'slg',     n:'Slugging',           u:'',    d:3, dir:'up'},
+ {k:'swings',  n:'Balls in Play',      u:'',    d:0, dir:'flat'},
+];
+const MK=Object.fromEntries(M.map(m=>[m.k,m]));
+const CORE=['maxEV','avgEV','hha','sweet','ld','avgLA'];
+
+/* ============================== computation ============================== */
+// Launch-angle buckets (HitTrax-style): GB <10, LD 10–25, FB 25–50, PU >50
+function bucket(la){ if(la==null||isNaN(la))return null; if(la<10)return'gb'; if(la<=25)return'ld'; if(la<=50)return'fb'; return'pu'; }
+const HITVAL={out:0,single:1,double:2,triple:3,hr:4,foul:null,error:0};
+function computeFromBalls(balls,hh){
+  const b=balls.filter(x=>x.ev!=null&&!isNaN(x.ev)&&x.ev>0);
+  if(!b.length) return null;
+  const evs=b.map(x=>+x.ev).sort((p,q)=>q-p);
+  const n=evs.length, topN=Math.max(1,Math.round(n*0.25));
+  const las=b.filter(x=>x.la!=null&&!isNaN(x.la)).map(x=>+x.la);
+  const dists=b.filter(x=>x.dist!=null&&!isNaN(x.dist)&&x.dist>0).map(x=>+x.dist);
+  const cnt={gb:0,ld:0,fb:0,pu:0}; let cls=0;
+  b.forEach(x=>{const k=bucket(x.la); if(k){cnt[k]++;cls++;}});
+  const hard=b.filter(x=>+x.ev>=hh).length;
+  const barrel=b.filter(x=>+x.ev>=hh && x.la!=null && +x.la>=8 && +x.la<=32).length;
+  const sweet=las.filter(v=>v>=8&&v<=32).length;
+  const s={
+    swings:n,
+    maxEV:evs[0],
+    avgEV:evs.reduce((a,c)=>a+c,0)/n,
+    topEV:evs.slice(0,topN).reduce((a,c)=>a+c,0)/topN,
+    hha:hard/n*100,
+    barrel:barrel/n*100,
+    avgLA:las.length?las.reduce((a,c)=>a+c,0)/las.length:null,
+    sweet:las.length?sweet/las.length*100:null,
+    gb:cls?cnt.gb/cls*100:null, ld:cls?cnt.ld/cls*100:null,
+    fb:cls?cnt.fb/cls*100:null, pu:cls?cnt.pu/cls*100:null,
+    maxDist:dists.length?Math.max(...dists):null,
+    avgDist:dists.length?dists.reduce((a,c)=>a+c,0)/dists.length:null,
+    ba:null,slg:null
+  };
+  const res=b.filter(x=>x.result&&HITVAL[x.result]!=null);
+  if(res.length>=5){
+    const tb=res.reduce((a,c)=>a+HITVAL[c.result],0);
+    const hits=res.filter(x=>HITVAL[x.result]>0).length;
+    s.ba=hits/res.length; s.slg=tb/res.length;
+  }
+  return s;
+}
+function sessionStats(s){
+  if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,HH()); if(c)return c;}
+  return s.summary||{};
+}
+const sorted=()=>DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+function series(k){return sorted().map(s=>({date:s.date,id:s.id,v:num(sessionStats(s)[k])})).filter(p=>p.v!=null);}
+function num(v){return (v===''||v==null||isNaN(v))?null:+v;}
+function fmt(k,v){ if(v==null)return'—'; const m=MK[k]; const s=(+v).toFixed(m.d);
+  return m.d===3?s.replace(/^0/,''):s; }
+function best(k){const S=series(k); if(!S.length)return null; const dir=MK[k].dir;
+  if(dir==='down')return S.reduce((a,c)=>c.v<a.v?c:a);
+  if(dir==='up')return S.reduce((a,c)=>c.v>a.v?c:a); return null;}
+function delta(k,i){ // change vs previous session that has this metric
+  const S=series(k); const idx=S.findIndex(p=>p.id===i);
+  if(idx<1)return null; return S[idx].v-S[idx-1].v;
+}
+function dirClass(k,d){ if(d==null)return'flat'; const dir=MK[k].dir;
+  if(Math.abs(d)<1e-9)return'flat';
+  if(dir==='up')return d>0?'up':'down';
+  if(dir==='down')return d<0?'up':'down'; return'flat';}
+function dstr(k,d){ if(d==null)return''; const m=MK[k]; const sign=d>0?'+':'';
+  return sign+(+d).toFixed(m.d===3?3:(Math.abs(d)<10?1:0)); }
+function rolling(S,w){return S.map((p,i)=>{const sl=S.slice(Math.max(0,i-w+1),i+1);
+  return {date:p.date,v:sl.reduce((a,c)=>a+c.v,0)/sl.length}});}
+
+/* ============================== paste parser ============================== */
+const ALIAS={
+  ev:['velo','exitvelocity','exitvelo','ev','exitballvelocity','ballvelocity','velocity','exitspeed','speed'],
+  la:['la','launchangle','angle','elev','elevation','verticalangle','va'],
+  dist:['dist','distance','projdistance','projecteddistance','carry'],
+  horiz:['horiz','horizangle','horizontalangle','spray','sprayangle','direction','dir','ha'],
+  poi:['poi','pointofimpact','contact','impact'],
+  result:['result','play','playoutcome','outcome','type','hittype','res'],
+  pitch:['pitchvelo','pitchspeed','pitch','pv']
+};
+function normKey(h){return h.toLowerCase().replace(/[^a-z]/g,'');}
+function mapCol(h){const n=normKey(h); for(const f in ALIAS){if(ALIAS[f].includes(n))return f;} return null;}
+function parseResult(t){ if(!t)return null; const s=(''+t).toLowerCase().trim();
+  if(/home ?run|^hr$|^4$/.test(s))return'hr';
+  if(/triple|^3b$|^3$/.test(s))return'triple';
+  if(/double|^2b$|^2$/.test(s))return'double';
+  if(/single|^1b$|^1$/.test(s))return'single';
+  if(/foul/.test(s))return'foul';
+  if(/error/.test(s))return'error';
+  if(/out|fly|ground|pop|line ?out|^0$/.test(s))return'out';
+  return null;}
+function parsePaste(txt){
+  const lines=txt.trim().split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
+  if(!lines.length)return{balls:[],msg:'Nothing to parse.'};
+  const split=l=>l.includes('\t')?l.split('\t'):(l.includes(',')?l.split(','):l.split(/\s{2,}|\s+/));
+  let cols=null,start=0;
+  const head=split(lines[0]).map(s=>s.trim());
+  if(head.some(h=>mapCol(h))&&head.some(h=>isNaN(parseFloat(h)))){
+    cols=head.map(mapCol); start=1;
+  }
+  const balls=[];
+  for(let i=start;i<lines.length;i++){
+    const parts=split(lines[i]).map(s=>s.trim());
+    const b={};
+    if(cols){
+      cols.forEach((c,j)=>{ if(!c)return; const raw=parts[j]; if(raw==null||raw==='')return;
+        if(c==='result')b.result=parseResult(raw);
+        else if(c==='poi')b.poi=raw;
+        else {const v=parseFloat((''+raw).replace(/[^\d.\-]/g,'')); if(!isNaN(v))b[c]=v;} });
+    }else{
+      const nums=parts.map(p=>parseFloat((''+p).replace(/[^\d.\-]/g,''))).filter(v=>!isNaN(v));
+      if(nums.length>=1)b.ev=nums[0];
+      if(nums.length>=2)b.la=nums[1];
+      if(nums.length>=3)b.dist=nums[2];
+      const r=parts.map(parseResult).find(Boolean); if(r)b.result=r;
+    }
+    if(b.ev!=null&&b.ev>0&&b.ev<200)balls.push(b);
+  }
+  return {balls,msg:balls.length?`Parsed ${balls.length} batted ball${balls.length>1?'s':''}.`:
+    'No rows recognized — check that a column holds exit velocity numbers.'};
+}
+
+/* ============================== charts (inline SVG) ============================== */
+function esc(s){return (''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function lineChart(S,k,opt={}){
+  if(S.length<1)return '<div class="empty">Not enough data yet.</div>';
+  const W=720,H=250,P={l:44,r:14,t:16,b:30};
+  const vals=S.map(p=>p.v); let lo=Math.min(...vals),hi=Math.max(...vals);
+  if(opt.band){lo=Math.min(lo,opt.band[0]);hi=Math.max(hi,opt.band[1]);}
+  if(hi-lo<1e-6){hi=lo+1;lo=lo-1;} const pad=(hi-lo)*0.15; lo-=pad;hi+=pad;
+  if(MK[k].u==='%'){lo=Math.max(0,lo);hi=Math.min(100,hi);}
+  const x=i=>P.l+(S.length===1?(W-P.l-P.r)/2:i*(W-P.l-P.r)/(S.length-1));
+  const y=v=>P.t+(H-P.t-P.b)*(1-(v-lo)/(hi-lo));
+  const pts=S.map((p,i)=>[x(i),y(p.v)]);
+  const path=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area=path+` L${pts[pts.length-1][0].toFixed(1)} ${H-P.b} L${pts[0][0].toFixed(1)} ${H-P.b} Z`;
+  let g='';
+  for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4,yy=y(v);
+    g+=`<line x1="${P.l}" x2="${W-P.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="#27395c" stroke-width="1"/>`+
+       `<text x="${P.l-7}" y="${(yy+4).toFixed(1)}" fill="#6c7fa5" font-size="11" text-anchor="end">${v.toFixed(MK[k].d===3?3:(hi-lo<15?1:0))}</text>`;}
+  let bandEl='';
+  if(opt.band){const y1=y(Math.min(opt.band[1],hi)),y2=y(Math.max(opt.band[0],lo));
+    bandEl=`<rect x="${P.l}" y="${y1.toFixed(1)}" width="${W-P.l-P.r}" height="${Math.max(0,y2-y1).toFixed(1)}" fill="rgba(47,191,113,.10)"/>`;}
+  let roll='';
+  if(S.length>=3){const R=rolling(S,3);
+    roll=`<path d="${R.map((p,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(p.v).toFixed(1)).join(' ')}" fill="none" stroke="#3d6df0" stroke-width="2" stroke-dasharray="5 4" opacity=".85"/>`;}
+  const dots=pts.map((p,i)=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.6" fill="#FA4616" stroke="#0b1220" stroke-width="1.5"><title>${esc(S[i].date)} — ${fmt(k,S[i].v)}</title></circle>`).join('');
+  const step=Math.ceil(S.length/6);
+  const xl=S.map((p,i)=>i%step===0||i===S.length-1?`<text x="${x(i).toFixed(1)}" y="${H-9}" fill="#6c7fa5" font-size="10.5" text-anchor="middle">${p.date.slice(5)}</text>`:'').join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet">
+   ${bandEl}${g}
+   <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+     <stop offset="0%" stop-color="#FA4616" stop-opacity=".28"/><stop offset="100%" stop-color="#FA4616" stop-opacity="0"/>
+   </linearGradient></defs>
+   <path d="${area}" fill="url(#ag)"/>
+   <path d="${path}" fill="none" stroke="#FA4616" stroke-width="2.5" stroke-linejoin="round"/>
+   ${roll}${dots}${xl}</svg>`;
+}
+function scatterLAEV(balls,hh){
+  const b=balls.filter(x=>x.ev!=null&&x.la!=null);
+  if(b.length<2)return '';
+  const W=700,H=280,P={l:42,r:12,t:14,b:32};
+  const evs=b.map(x=>+x.ev); const loE=Math.min(...evs)-4,hiE=Math.max(...evs)+4;
+  const loA=-30,hiA=60;
+  const x=v=>P.l+(W-P.l-P.r)*(Math.max(loA,Math.min(hiA,v))-loA)/(hiA-loA);
+  const y=v=>P.t+(H-P.t-P.b)*(1-(v-loE)/(hiE-loE));
+  let g='';
+  for(let a=loA;a<=hiA;a+=15)g+=`<line x1="${x(a)}" x2="${x(a)}" y1="${P.t}" y2="${H-P.b}" stroke="#27395c"/>`+
+    `<text x="${x(a)}" y="${H-11}" fill="#6c7fa5" font-size="10.5" text-anchor="middle">${a}°</text>`;
+  for(let i=0;i<=4;i++){const v=loE+(hiE-loE)*i/4,yy=y(v);
+    g+=`<line x1="${P.l}" x2="${W-P.r}" y1="${yy}" y2="${yy}" stroke="#27395c"/>`+
+       `<text x="${P.l-6}" y="${yy+4}" fill="#6c7fa5" font-size="10.5" text-anchor="end">${v.toFixed(0)}</text>`;}
+  const zone=`<rect x="${x(8)}" y="${P.t}" width="${x(32)-x(8)}" height="${y(hh)-P.t}" fill="rgba(47,191,113,.13)"/>
+   <text x="${(x(8)+x(32))/2}" y="${P.t+16}" fill="#7fe0ab" font-size="11" text-anchor="middle" font-weight="700">DAMAGE ZONE</text>`;
+  const dots=b.map(p=>{const hard=+p.ev>=hh&&+p.la>=8&&+p.la<=32;
+    return `<circle cx="${x(+p.la).toFixed(1)}" cy="${y(+p.ev).toFixed(1)}" r="4.5" fill="${hard?'#2fbf71':'#FA4616'}" opacity=".85"><title>${(+p.ev).toFixed(1)} mph @ ${(+p.la).toFixed(0)}°</title></circle>`}).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}${zone}${dots}
+    <text x="${W/2}" y="${H-1}" fill="#6c7fa5" font-size="10" text-anchor="middle">launch angle →</text></svg>`;
+}
+function sprayChart(balls){
+  const b=balls.filter(x=>x.dist>0&&x.horiz!=null&&!isNaN(x.horiz));
+  if(b.length<2)return '';
+  const W=440,H=380,cx=W/2,cy=H-24;
+  const maxD=Math.max(330,Math.ceil(Math.max(...b.map(x=>+x.dist))/50)*50);
+  const sc=(H-60)/maxD;
+  const pt=(d,a)=>{const r=(a*Math.PI)/180; return [cx+Math.sin(r)*d*sc, cy-Math.cos(r)*d*sc];};
+  let arcs='';
+  for(let d=100;d<=maxD;d+=100){const A=pt(d,-45),B=pt(d,45);
+    arcs+=`<path d="M${A[0].toFixed(1)} ${A[1].toFixed(1)} A ${(d*sc).toFixed(1)} ${(d*sc).toFixed(1)} 0 0 1 ${B[0].toFixed(1)} ${B[1].toFixed(1)}" fill="none" stroke="#27395c"/>`+
+    `<text x="${cx}" y="${(cy-d*sc-4).toFixed(1)}" fill="#6c7fa5" font-size="10" text-anchor="middle">${d}</text>`;}
+  const L=pt(maxD,-45),R=pt(maxD,45);
+  const foul=`<line x1="${cx}" y1="${cy}" x2="${L[0].toFixed(1)}" y2="${L[1].toFixed(1)}" stroke="#405a8c"/>
+    <line x1="${cx}" y1="${cy}" x2="${R[0].toFixed(1)}" y2="${R[1].toFixed(1)}" stroke="#405a8c"/>`;
+  const dots=b.map(p=>{const [X,Y]=pt(+p.dist,Math.max(-45,Math.min(45,+p.horiz)));
+    const k=bucket(p.la)||'ld'; const col={gb:'#f2b13c',ld:'#2fbf71',fb:'#3d6df0',pu:'#ef4d5a'}[k];
+    return `<circle cx="${X.toFixed(1)}" cy="${Y.toFixed(1)}" r="4" fill="${col}" opacity=".85"><title>${(+p.dist).toFixed(0)} ft</title></circle>`}).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${arcs}${foul}${dots}
+    <circle cx="${cx}" cy="${cy}" r="3" fill="#e9eefb"/></svg>
+    <div class="legend"><span><i style="background:#2fbf71"></i>Line drive</span><span><i style="background:#f2b13c"></i>Ground ball</span>
+    <span><i style="background:#3d6df0"></i>Fly ball</span><span><i style="background:#ef4d5a"></i>Pop-up</span></div>`;
+}
+function mixBar(s){
+  const parts=[['gb','#f2b13c','GB'],['ld','#2fbf71','LD'],['fb','#3d6df0','FB'],['pu','#ef4d5a','PU']]
+    .filter(p=>s[p[0]]!=null);
+  if(!parts.length)return'';
+  return `<div style="display:flex;height:26px;border-radius:8px;overflow:hidden;border:1px solid var(--line)">`+
+   parts.map(p=>`<div style="width:${s[p[0]]}%;background:${p[1]};display:grid;place-items:center;font-size:11px;font-weight:800;color:#0b1220">${s[p[0]]>=12?Math.round(s[p[0]])+'%':''}</div>`).join('')+
+   `</div><div class="legend">`+parts.map(p=>`<span><i style="background:${p[1]}"></i>${p[2]} ${Math.round(s[p[0]])}%</span>`).join('')+`</div>`;
+}
+
+/* ============================== views ============================== */
+const TABS=[['dash','Dashboard'],['log','Log Session'],['trends','Trends'],['sessions','Sessions'],['report','Report'],['data','Player & Data']];
+let TAB='dash', TRENDK='maxEV';
+function render(){
+  document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
+    `<button class="${TAB===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
+  const p=DB.player;
+  document.getElementById('who').innerHTML=p.name?
+    `<b>${esc(p.name)}</b>${[p.age?p.age+' yrs':'',p.level].filter(Boolean).map(esc).join(' · ')}`:
+    `<span class="chip" style="cursor:pointer" onclick="go('data')">Set up player</span>`;
+  document.getElementById('view').innerHTML=({dash:vDash,log:vLog,trends:vTrends,sessions:vSessions,report:vReport,data:vData})[TAB]();
+  if(TAB==='log')initLog();
+}
+function go(t){TAB=t;render();window.scrollTo(0,0)}
+
+/* ---------- dashboard ---------- */
+function vDash(){
+  const S=sorted();
+  if(!S.length)return `<div class="card"><div class="empty">
+    <div class="big">⚾</div><h2>No sessions yet</h2>
+    <p style="color:var(--dim);max-width:460px;margin:8px auto 16px">Log a HitTrax session — type in the summary numbers
+    off the report screen, or paste the pitch-by-pitch rows and everything gets calculated for you.</p>
+    <button class="btn" onclick="go('log')">Log first session</button></div></div>`
+    + refCard();
+  const last=S[S.length-1], st=sessionStats(last);
+  const b=bench(DB.player.age);
+  const tiles=CORE.map(k=>{
+    const v=num(st[k]); if(v==null)return'';
+    const d=delta(k,last.id); const bs=best(k);
+    const isPB=bs&&bs.id===last.id&&S.length>1;
+    return `<div class="tile"><div class="k">${MK[k].n}${isPB?'<span class="pb">PB</span>':''}</div>
+      <div class="v">${fmt(k,v)}<small>${MK[k].u}</small></div>
+      <div class="d ${dirClass(k,d)}">${d==null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'}</div></div>`;
+  }).join('');
+  return `
+  <div class="card">
+    <div class="row" style="align-items:baseline">
+      <div><h2>Latest session</h2><div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div></div>
+      <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${last.id}')">Details</button>
+    </div>
+    <div class="tiles">${tiles}</div>
+    ${st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
+  </div>
+  ${b?benchCard(st,b):''}
+  ${coachCard(S)}
+  <div class="card"><h2>${MK['maxEV'].n} trend</h2>
+    <div class="hint">Solid = each session · dashed blue = 3-session rolling average</div>
+    ${lineChart(series('maxEV'),'maxEV')}
+    <div style="margin-top:10px"><button class="btn ghost" onclick="go('trends')">All trends</button></div>
+  </div>
+  ${pbCard()}`;
+}
+function benchCard(st,b){
+  const v=num(st.maxEV); if(v==null)return'';
+  const hi=Math.max(b.elite+6,v+3), lo=Math.max(20,b.avg[0]-12);
+  const pct=x=>Math.max(0,Math.min(100,(x-lo)/(hi-lo)*100));
+  let tag='Building', cls='r';
+  if(v>=b.elite){tag='Elite range';cls='g'}
+  else if(v>=b.good[0]){tag='Above average';cls='g'}
+  else if(v>=b.avg[0]){tag='In the average band';cls='a'}
+  return `<div class="card"><div class="row" style="align-items:center">
+    <div><h2>Age benchmark <span class="chip">${b.label}</span></h2>
+    <div class="hint">Max exit velo vs. typical ranges for this age (controlled/tee conditions)</div></div>
+    <span class="chip ${cls}" style="margin-left:auto">${tag}</span></div>
+    <div style="position:relative;height:56px;margin-top:6px">
+      <div style="position:absolute;top:18px;left:0;right:0;height:14px;border-radius:99px;background:var(--bg2);border:1px solid var(--line);overflow:hidden">
+        <div style="position:absolute;left:${pct(b.avg[0])}%;width:${pct(b.avg[1])-pct(b.avg[0])}%;top:0;bottom:0;background:rgba(242,177,60,.35)"></div>
+        <div style="position:absolute;left:${pct(b.good[0])}%;width:${pct(b.good[1])-pct(b.good[0])}%;top:0;bottom:0;background:rgba(47,191,113,.35)"></div>
+        <div style="position:absolute;left:${pct(b.elite)}%;right:0;top:0;bottom:0;background:rgba(47,191,113,.6)"></div>
+      </div>
+      <div style="position:absolute;left:${pct(v)}%;top:8px;transform:translateX(-50%);text-align:center">
+        <div style="width:3px;height:34px;background:var(--orange);margin:0 auto;border-radius:2px"></div>
+        <div style="font-size:12px;font-weight:800;color:var(--orange);margin-top:2px">${v.toFixed(1)}</div>
+      </div>
+    </div>
+    <div class="legend" style="margin-top:16px"><span><i style="background:rgba(242,177,60,.6)"></i>Average ${b.avg[0]}–${b.avg[1]}</span>
+      <span><i style="background:rgba(47,191,113,.5)"></i>Good ${b.good[0]}–${b.good[1]}</span>
+      <span><i style="background:rgba(47,191,113,.85)"></i>Elite ${b.elite}+</span></div>
+  </div>`;
+}
+function coachCard(S){
+  if(S.length<2)return `<div class="card note">Log a second session and this panel starts calling out what moved —
+   and what to work on next.</div>`;
+  const good=[],work=[];
+  ['maxEV','avgEV','hha','sweet','ld','gb','avgLA','barrel'].forEach(k=>{
+    const Sr=series(k); if(Sr.length<3)return;
+    const half=Math.max(1,Math.floor(Sr.length/2));
+    const early=Sr.slice(0,half), late=Sr.slice(-half);
+    const a=early.reduce((x,c)=>x+c.v,0)/early.length, b2=late.reduce((x,c)=>x+c.v,0)/late.length;
+    const d=b2-a; if(Math.abs(d)<(MK[k].u==='%'?2:0.6))return;
+    const cls=dirClass(k,d);
+    const txt=`<b>${MK[k].n}</b> ${d>0?'up':'down'} ${Math.abs(d).toFixed(MK[k].d)}${MK[k].u} (first half ${fmt(k,a)} → recent ${fmt(k,b2)})`;
+    (cls==='up'?good:work).push(txt);
+  });
+  const st=sessionStats(S[S.length-1]);
+  const cues=[];
+  if(num(st.gb)>=45)cues.push('Ground-ball rate is high — the barrel is working down through the zone. Drill: high-tee / top-half contact work.');
+  if(num(st.pu)>=15)cues.push('Pop-ups are up — usually early bat-head release or too steep. Drill: line-drive-only rounds off the tee.');
+  if(num(st.sweet)!=null&&num(st.sweet)<45)cues.push('Under half the batted balls are in the 8–32° window. Chase sweet-spot % before chasing max velo.');
+  if(num(st.avgEV)!=null&&num(st.maxEV)!=null&&num(st.maxEV)-num(st.avgEV)>15)cues.push('Big gap between max and average EV — the power is there, consistency of contact is the gap.');
+  if(num(st.ld)>=25&&num(st.hha)>=40)cues.push('Line-drive rate and hard-hit rate are both strong — this is the profile you want to repeat.');
+  return `<div class="card"><h2>What's moving</h2><div class="hint">First half of your logged sessions vs. the most recent half</div>
+   ${good.length?'<div style="margin-top:6px"><span class="chip g">Improving</span><ul class="tight">'+good.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
+   ${work.length?'<div style="margin-top:12px"><span class="chip a">Watch</span><ul class="tight">'+work.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
+   ${!good.length&&!work.length?'<div class="hint">No trend big enough to call yet — keep logging.</div>':''}
+   ${cues.length?'<div style="margin-top:14px"><span class="chip">Cues from the last session</span><ul class="tight">'+cues.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
+  </div>`;
+}
+function pbCard(){
+  const rows=M.filter(m=>m.dir==='up'||m.dir==='down').map(m=>{
+    const b=best(m.k); if(!b)return'';
+    return `<tr><td>${m.n}</td><td style="font-weight:800">${fmt(m.k,b.v)} ${m.u}</td><td style="color:var(--dim)">${b.date}</td></tr>`;
+  }).filter(Boolean).join('');
+  if(!rows)return'';
+  return `<div class="card"><h2>Personal bests</h2><div class="hint">Best single-session value for each metric</div>
+   <div class="scroll"><table><thead><tr><th>Metric</th><th>Best</th><th>Set on</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function refCard(){
+  return `<div class="card"><h2>What HitTrax gives you</h2>
+  <div class="hint">Everything below can be logged here — per session, and per batted ball if you have the detail rows.</div>
+  <ul class="tight">
+   <li><b>Per batted ball:</b> exit velocity, launch angle, projected distance, point of impact, horizontal/spray angle, pitch speed, play outcome</li>
+   <li><b>Session summary:</b> max &amp; average exit velo, average launch angle, average &amp; max distance, hard-hit average, line-drive / fly-ball / ground-ball %, batting average, slugging</li>
+   <li><b>Charts:</b> spray chart, strike-zone map, launch angle vs. exit velo, launch angle vs. distance, LA vs. BA/SLG</li>
+  </ul></div>`;
+}
+
+/* ---------- log session ---------- */
+let LOGMODE='detail', PARSED=[];
+function vLog(){
+  const today=new Date().toISOString().slice(0,10);
+  return `<div class="card">
+   <h2>Log a session</h2>
+   <div class="hint">Paste the pitch-by-pitch rows for full charts, or just key in the summary numbers off the HitTrax report.</div>
+   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+     <div><label>Date</label><input type="date" id="f_date" value="${today}"></div>
+     <div><label>Session type</label><select id="f_type">
+       <option>Front toss</option><option>Machine</option><option>Live BP</option><option>Tee</option><option>Game / scrimmage</option><option>Other</option>
+     </select></div>
+     <div><label>Pitch speed (mph)</label><input type="number" id="f_pitch" step="1" placeholder="optional"></div>
+     <div><label>Location</label><input id="f_loc" placeholder="facility / cage"></div>
+   </div>
+   <div style="margin-top:14px"><div class="seg">
+     <button class="${LOGMODE==='detail'?'on':''}" onclick="setMode('detail')">Paste batted balls</button>
+     <button class="${LOGMODE==='summary'?'on':''}" onclick="setMode('summary')">Type summary</button>
+   </div></div>
+   <div id="logBody" style="margin-top:14px"></div>
+   <div style="margin-top:8px"><label>Notes (what you worked on)</label>
+     <textarea id="f_notes" style="min-height:70px" placeholder="e.g. new stride timing, stayed on the fastball, tired last 20 swings"></textarea></div>
+   <div class="row" style="margin-top:14px"><button class="btn" onclick="saveSession()">Save session</button>
+     <button class="btn ghost" onclick="go('dash')">Cancel</button></div>
+  </div>`;
+}
+function setMode(m){LOGMODE=m;PARSED=[];render()}
+function initLog(){
+  const el=document.getElementById('logBody');
+  if(LOGMODE==='detail'){
+    el.innerHTML=`<label>Batted-ball rows</label>
+      <textarea id="f_paste" placeholder="Paste from HitTrax (CSV, a copied table, or one ball per line).
+Column names are auto-detected — Velo / Exit Velocity / EV, LA / Launch Angle, Dist / Distance, Spray / Horiz Angle, Result / Play.
+
+Velo	LA	Dist	Result
+78.4	14	205	Single
+81.2	22	241	Double
+69.0	-8	62	Out
+
+No header? One line per ball works too:  78.4 14 205"></textarea>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <button class="btn sec" onclick="doParse()">Parse</button>
+        <span id="parseMsg" style="font-size:13px;color:var(--dim)"></span></div>
+      <div id="preview"></div>`;
+  }else{
+    el.innerHTML=`<div class="hint" style="margin-bottom:8px">Fill in whatever your report shows — blanks are fine.</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">`+
+      M.filter(m=>m.k!=='topEV'&&m.k!=='barrel').map(m=>
+      `<div><label>${m.n}${m.u?' ('+m.u+')':''}</label><input type="number" step="any" id="s_${m.k}"></div>`).join('')+
+      `</div>`;
+  }
+}
+function doParse(){
+  const r=parsePaste(document.getElementById('f_paste').value);
+  PARSED=r.balls;
+  document.getElementById('parseMsg').textContent=r.msg;
+  const pv=document.getElementById('preview');
+  if(!PARSED.length){pv.innerHTML='';return}
+  const st=computeFromBalls(PARSED,HH());
+  pv.innerHTML=`<div class="card" style="background:var(--card2)"><h2>Preview</h2>
+   <div class="hint">Computed with a ${HH()} mph hard-hit threshold</div>
+   <div class="tiles">`+['swings','maxEV','avgEV','topEV','hha','avgLA','sweet','ld'].map(k=>
+     st[k]==null?'':`<div class="tile" style="background:var(--bg2)"><div class="k">${MK[k].n}</div>
+       <div class="v" style="font-size:21px">${fmt(k,st[k])}<small>${MK[k].u}</small></div></div>`).join('')+
+   `</div>${st.gb!=null?'<div style="margin-top:12px">'+mixBar(st)+'</div>':''}</div>`;
+}
+function saveSession(){
+  const g=id=>document.getElementById(id);
+  const s={id:uid(),date:g('f_date').value,type:g('f_type').value,pitch:num(g('f_pitch').value),
+    location:g('f_loc').value.trim(),notes:g('f_notes').value.trim(),mode:LOGMODE};
+  if(!s.date){alert('Pick a date.');return}
+  if(LOGMODE==='detail'){
+    if(!PARSED.length)doParse();
+    if(!PARSED.length){alert('Nothing parsed yet — paste rows and hit Parse.');return}
+    s.balls=PARSED; s.summary=computeFromBalls(PARSED,HH());
+  }else{
+    const sum={}; let any=false;
+    M.forEach(m=>{const e=document.getElementById('s_'+m.k); if(!e)return;
+      const v=num(e.value); if(v!=null){sum[m.k]=v;any=true}});
+    if(!any){alert('Enter at least one number.');return}
+    if(sum.hha!=null&&sum.hha<=1)sum.hha*=100;   // accept .450 or 45
+    s.summary=sum;
+  }
+  DB.sessions.push(s); save(); PARSED=[]; go('dash');
+}
+
+/* ---------- trends ---------- */
+function vTrends(){
+  const S=series(TRENDK);
+  const avail=M.filter(m=>series(m.k).length>0);
+  if(!avail.length)return '<div class="card"><div class="empty">Log a session first.</div></div>';
+  if(!avail.find(m=>m.k===TRENDK))TRENDK=avail[0].k;
+  const b=bench(DB.player.age);
+  const band=(TRENDK==='maxEV'&&b)?[b.good[0],b.good[1]]:(MK[TRENDK].dir==='win'?MK[TRENDK].win:null);
+  const first=S[0],lastp=S[S.length-1];
+  const chg=S.length>1?lastp.v-first.v:null;
+  return `<div class="card">
+   <h2>Trends</h2><div class="hint">Dashed blue line is the 3-session rolling average — that's the honest read; single sessions bounce.</div>
+   <div style="margin:10px 0"><select onchange="TRENDK=this.value;render()" style="max-width:280px">
+     ${avail.map(m=>`<option value="${m.k}" ${m.k===TRENDK?'selected':''}>${m.n}</option>`).join('')}
+   </select></div>
+   ${lineChart(series(TRENDK),TRENDK,{band})}
+   <div class="tiles" style="margin-top:14px">
+     <div class="tile"><div class="k">First (${first.date})</div><div class="v">${fmt(TRENDK,first.v)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">Latest (${lastp.date})</div><div class="v">${fmt(TRENDK,lastp.v)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">Total change</div><div class="v ${dirClass(TRENDK,chg)}">${chg==null?'—':dstr(TRENDK,chg)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">Sessions</div><div class="v">${S.length}</div></div>
+   </div></div>
+   <div class="card"><h2>All metrics at a glance</h2>
+   <div class="scroll"><table><thead><tr><th>Metric</th><th>First</th><th>Latest</th><th>Change</th><th>Best</th></tr></thead><tbody>`+
+   avail.map(m=>{const s2=series(m.k),f=s2[0],l=s2[s2.length-1],d=s2.length>1?l.v-f.v:null,bs=best(m.k);
+     return `<tr class="clickable" onclick="TRENDK='${m.k}';render();window.scrollTo(0,0)"><td>${m.n}</td><td>${fmt(m.k,f.v)}</td>
+      <td style="font-weight:700">${fmt(m.k,l.v)}</td><td class="${dirClass(m.k,d)}" style="font-weight:700">${d==null?'—':dstr(m.k,d)}</td>
+      <td>${bs?fmt(m.k,bs.v):'—'}</td></tr>`}).join('')+
+   `</tbody></table></div></div>`;
+}
+
+/* ---------- sessions ---------- */
+function vSessions(){
+  const S=sorted().reverse();
+  if(!S.length)return '<div class="card"><div class="empty">No sessions logged.</div></div>';
+  return `<div class="card"><h2>All sessions</h2><div class="hint">${S.length} logged · tap a row for the full breakdown</div>
+  <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>BIP</th><th>Max EV</th><th>Avg EV</th><th>HHA</th><th>LD%</th><th>Avg LA</th><th></th></tr></thead><tbody>`+
+  S.map(s=>{const st=sessionStats(s);
+   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>
+    <td>${st.swings!=null?Math.round(st.swings):'—'}</td><td style="font-weight:700">${fmt('maxEV',num(st.maxEV))}</td>
+    <td>${fmt('avgEV',num(st.avgEV))}</td><td>${st.hha!=null?Math.round(st.hha)+'%':'—'}</td>
+    <td>${st.ld!=null?Math.round(st.ld)+'%':'—'}</td><td>${fmt('avgLA',num(st.avgLA))}</td>
+    <td>${s.mode==='detail'?'<span class="chip">detail</span>':''}</td></tr>`}).join('')+
+  `</tbody></table></div></div>`;
+}
+function openSession(id){
+  const s=DB.sessions.find(x=>x.id===id); if(!s)return;
+  const st=sessionStats(s);
+  document.getElementById('dlgTitle').textContent=s.date+(s.type?' · '+s.type:'');
+  const tiles=M.filter(m=>num(st[m.k])!=null).map(m=>{const d=delta(m.k,id);
+    return `<div class="tile"><div class="k">${m.n}</div><div class="v" style="font-size:20px">${fmt(m.k,num(st[m.k]))}<small>${m.u}</small></div>
+    ${d!=null?`<div class="d ${dirClass(m.k,d)}">${dstr(m.k,d)}</div>`:''}</div>`}).join('');
+  const balls=s.balls||[];
+  document.getElementById('dlgBody').innerHTML=`
+   ${s.location||s.pitch?`<div class="hint">${[s.location,s.pitch?s.pitch+' mph pitch':''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
+   <div class="tiles">${tiles}</div>
+   ${st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
+   ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
+   ${balls.length&&balls.some(b=>b.horiz!=null)?`<div style="margin-top:18px"><label>Spray chart</label>${sprayChart(balls)}</div>`:''}
+   ${s.notes?`<div style="margin-top:16px"><label>Notes</label><div style="background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px">${esc(s.notes)}</div></div>`:''}
+   ${balls.length?`<div style="margin-top:18px"><label>Batted balls (${balls.length})</label><div class="scroll" style="max-height:240px">
+     <table class="mono"><thead><tr><th>#</th><th>EV</th><th>LA</th><th>Dist</th><th>Type</th><th>Result</th></tr></thead><tbody>`+
+     balls.map((b,i)=>`<tr><td>${i+1}</td><td>${(+b.ev).toFixed(1)}</td><td>${b.la!=null?(+b.la).toFixed(0)+'°':'—'}</td>
+       <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${(bucket(b.la)||'—').toUpperCase()}</td><td>${esc(b.result||'—')}</td></tr>`).join('')+
+     `</tbody></table></div></div>`:''}
+   <div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')" style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`;
+  dlg.showModal();
+}
+function delSession(id){
+  if(!confirm('Delete this session? This cannot be undone.'))return;
+  DB.sessions=DB.sessions.filter(s=>s.id!==id); save(); dlg.close(); render();
+}
+
+/* ---------- report ---------- */
+function vReport(){
+  const S=sorted();
+  if(S.length<2)return '<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
+  const from=S[0].date,to=S[S.length-1].date;
+  const b=bench(DB.player.age);
+  const rows=M.map(m=>{const s2=series(m.k); if(s2.length<2)return'';
+    const f=s2[0].v,l=s2[s2.length-1].v,d=l-f,bs=best(m.k);
+    const pct=f?((d/Math.abs(f))*100):null;
+    return `<tr><td>${m.n}</td><td>${fmt(m.k,f)}</td><td style="font-weight:700">${fmt(m.k,l)}</td>
+      <td class="${dirClass(m.k,d)}" style="font-weight:700">${dstr(m.k,d)}${pct!=null&&m.u!=='%'&&m.u!=='°'?` <small style="color:var(--dim)">(${pct>0?'+':''}${pct.toFixed(0)}%)</small>`:''}</td>
+      <td>${bs?fmt(m.k,bs.v)+' · '+bs.date:'—'}</td></tr>`}).filter(Boolean).join('');
+  return `<div class="card">
+    <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
+      <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
+    <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — HitTrax progress report</h2>
+    <div class="hint">${from} → ${to} · ${S.length} sessions${DB.player.age?' · age '+esc(DB.player.age):''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
+    <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Metric</th><th>First</th><th>Latest</th><th>Change</th><th>Best</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    ${b?`<div class="note" style="margin-top:14px">Age-group reference (${b.label}): average ${b.avg[0]}–${b.avg[1]} mph · good ${b.good[0]}–${b.good[1]} mph · elite ${b.elite}+ mph max exit velo.</div>`:''}
+   </div>
+   <div class="card"><h2>Max exit velo</h2>${lineChart(series('maxEV'),'maxEV',b?{band:[b.good[0],b.good[1]]}:{})}</div>
+   <div class="card"><h2>Hard-hit average</h2>${lineChart(series('hha'),'hha')}</div>
+   <div class="card"><h2>Session log</h2><div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>BIP</th><th>Max EV</th><th>Avg EV</th><th>Notes</th></tr></thead><tbody>`+
+   S.slice().reverse().map(s=>{const st=sessionStats(s);
+     return `<tr><td>${s.date}</td><td>${esc(s.type||'')}</td><td>${st.swings!=null?Math.round(st.swings):'—'}</td>
+      <td>${fmt('maxEV',num(st.maxEV))}</td><td>${fmt('avgEV',num(st.avgEV))}</td>
+      <td style="white-space:normal;color:var(--dim);max-width:280px">${esc(s.notes||'')}</td></tr>`}).join('')+
+   `</tbody></table></div></div>`;
+}
+function copyReport(){
+  const S=sorted(); let t=`${DB.player.name||'Player'} — HitTrax progress\n${S[0].date} → ${S[S.length-1].date} · ${S.length} sessions\n\n`;
+  M.forEach(m=>{const s2=series(m.k); if(s2.length<2)return;
+    const f=s2[0].v,l=s2[s2.length-1].v;
+    t+=`${m.n}: ${fmt(m.k,f)} → ${fmt(m.k,l)} (${dstr(m.k,l-f)}${m.u})\n`});
+  navigator.clipboard.writeText(t).then(()=>alert('Report copied.'),()=>alert('Copy failed.'));
+}
+
+/* ---------- player & data ---------- */
+function vData(){
+  const p=DB.player;
+  return `<div class="card"><h2>Player</h2><div class="hint">Age sets the benchmark band and the default hard-hit threshold.</div>
+   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+     <div><label>Name</label><input id="p_name" value="${esc(p.name||'')}"></div>
+     <div><label>Age</label><input id="p_age" type="number" value="${esc(p.age||'')}"></div>
+     <div><label>Level / team</label><input id="p_level" value="${esc(p.level||'')}" placeholder="e.g. 12U travel"></div>
+     <div><label>Bats</label><select id="p_bats"><option ${p.bats==='R'?'selected':''}>R</option><option ${p.bats==='L'?'selected':''}>L</option><option ${p.bats==='S'?'selected':''}>S</option></select></div>
+     <div><label>Hard-hit threshold (mph)</label><input id="p_hh" type="number" value="${esc(DB.settings.hardHit||'')}" placeholder="auto: ${hardHitDefault(p.age)}"></div>
+   </div>
+   <div style="margin-top:12px"><button class="btn" onclick="savePlayer()">Save</button></div></div>
+
+   <div class="card"><h2>Backup &amp; transfer</h2>
+   <div class="hint">Data lives in this browser only. Export before switching phones or clearing history.</div>
+   <div class="row"><button class="btn sec" onclick="expJSON()">Export backup (.json)</button>
+     <button class="btn sec" onclick="expCSV()">Export sessions (.csv)</button>
+     <button class="btn ghost" onclick="document.getElementById('imp').click()">Import backup</button>
+     <input type="file" id="imp" accept=".json" style="display:none" onchange="impJSON(this)"></div>
+   <div class="row" style="margin-top:16px"><button class="btn ghost" style="color:var(--red);border-color:rgba(239,77,90,.4)" onclick="wipe()">Erase everything</button></div></div>
+
+   ${refCard()}
+
+   <div class="card"><h2>How the numbers are defined</h2>
+   <ul class="tight">
+    <li><b>Launch-angle buckets:</b> ground ball &lt;10°, line drive 10–25°, fly ball 25–50°, pop-up &gt;50°</li>
+    <li><b>Sweet-spot LA %:</b> share of batted balls between 8° and 32°</li>
+    <li><b>Hard-hit average:</b> share of batted balls at or above ${HH()} mph exit velo</li>
+    <li><b>Barrel %:</b> at or above ${HH()} mph <i>and</i> between 8° and 32° — the damage zone</li>
+    <li><b>Top-25% avg EV:</b> average of the hardest quarter of the round — steadier than a single max, better than the overall average for tracking real power gains</li>
+   </ul>
+   <div class="note warn" style="margin-top:12px">Compare like with like: tee, front toss, machine and live BP produce different exit velos.
+   Filter your read by session type when you judge progress.</div></div>`;
+}
+function savePlayer(){
+  const g=id=>document.getElementById(id).value.trim();
+  DB.player={name:g('p_name'),age:g('p_age'),level:g('p_level'),bats:document.getElementById('p_bats').value};
+  const hh=num(g('p_hh')); DB.settings.hardHit=hh||null;
+  save(); render(); alert('Saved.');
+}
+function dl(name,text,type){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type}));
+  a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+function expJSON(){dl(`hittrax-backup-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(DB,null,2),'application/json')}
+function expCSV(){
+  const ks=M.map(m=>m.k);
+  let csv='date,type,location,pitch_speed,'+ks.join(',')+',notes\n';
+  sorted().forEach(s=>{const st=sessionStats(s);
+    csv+=[s.date,s.type||'',s.location||'',s.pitch||''].map(v=>`"${(''+v).replace(/"/g,'""')}"`).join(',')+','+
+      ks.map(k=>num(st[k])!=null?(+st[k]).toFixed(MK[k].d):'').join(',')+
+      `,"${(s.notes||'').replace(/"/g,'""')}"\n`});
+  dl(`hittrax-sessions-${new Date().toISOString().slice(0,10)}.csv`,csv,'text/csv');
+}
+function impJSON(inp){
+  const f=inp.files[0]; if(!f)return; const r=new FileReader();
+  r.onload=()=>{try{const d=JSON.parse(r.result);
+    if(!d.sessions)throw new Error('Not a tracker backup');
+    if(!confirm(`Import ${d.sessions.length} sessions? This replaces what's here now.`))return;
+    DB=Object.assign(blank(),d); save(); render(); alert('Imported.');
+  }catch(e){alert('Import failed: '+e.message)} };
+  r.readAsText(f); inp.value='';
+}
+function wipe(){
+  if(!confirm('Erase all sessions and player info?'))return;
+  if(!confirm('Really erase? Export a backup first if you want to keep it.'))return;
+  DB=blank(); save(); render();
+}
+
+render();
+</script>
+</body>
+</html>
