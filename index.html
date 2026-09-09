@@ -29,6 +29,12 @@ header{position:sticky;top:0;z-index:30;background:rgba(11,18,32,.92);backdrop-f
 .hd .sub{font-size:12px;color:var(--dim);margin-top:1px}
 .hd .who{margin-left:auto;text-align:right;font-size:12px;color:var(--dim)}
 .hd .who b{display:block;color:var(--txt);font-size:14px}
+.pill{flex:none;display:inline-flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--line);
+  color:var(--dim);border-radius:999px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dim2);flex:none}
+.pill.synced .dot{background:var(--green)} .pill.saving .dot{background:var(--amber)}
+.pill.offline .dot{background:var(--red)} .pill.local .dot{background:var(--dim2)}
+@media(max-width:520px){.pill span.lbl{display:none}.pill{padding:6px}}
 nav{display:flex;gap:4px;overflow-x:auto;padding:0 0 8px;scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
 nav button{flex:none;background:transparent;border:1px solid transparent;color:var(--dim);
@@ -120,12 +126,17 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
      <div class="sub" id="hdSub">Session-by-session hitting development</div>
    </div>
    <div class="who" id="who"></div>
+   <button class="pill local" id="syncPill" onclick="openAccount()" title="Sync"><i class="dot"></i><span class="lbl">Local only</span></button>
   </div>
   <nav id="nav"></nav>
  </div>
 </header>
 
 <main class="wrap" id="view"></main>
+
+<dialog id="adlg"><div class="dlg-hd"><h2>Sync across devices</h2>
+  <button class="btn ghost" style="margin-left:auto;padding:6px 12px" onclick="adlg.close()">Close</button></div>
+  <div class="dlg-bd" id="adlgBody"></div></dialog>
 
 <dialog id="dlg"><div class="dlg-hd"><h2 id="dlgTitle">Session</h2>
   <button class="btn ghost" style="margin-left:auto;padding:6px 12px" onclick="dlg.close()">Close</button></div>
@@ -135,10 +146,203 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 /* ============================== storage ============================== */
 const KEY='hittrax.tracker.v1';
 const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
-const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],goals:[]});
-let DB=load();
-function load(){try{const r=localStorage.getItem(KEY);return r?Object.assign(blank(),JSON.parse(r)):blank()}catch(e){return blank()}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){alert('Could not save: '+e.message)}}
+const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],deleted:[],goals:[],updatedAt:0});
+let DB=blank();
+function lsKey(){return session?KEY+'.data.'+session.user.id:KEY}
+function load(){
+  // signed in: prefer this account's cache, but adopt anything logged before signing in
+  const keys=session?[KEY+'.data.'+session.user.id,KEY]:[KEY];
+  for(const k of keys){try{const r=localStorage.getItem(k); if(r)return Object.assign(blank(),JSON.parse(r))}catch(e){}}
+  return blank();
+}
+function saveLocal(){try{localStorage.setItem(lsKey(),JSON.stringify(DB))}catch(e){alert('Could not save: '+e.message)}}
+function save(){DB.updatedAt=Date.now(); saveLocal(); queuePush();}
+
+/* ============================== cloud sync (Supabase) ============================== */
+const SUPA_URL='https://xuipllbtrsebavtffjdy.supabase.co';
+const SUPA_KEY='sb_publishable_4Uc4-PMVI4Bsodk6FYYEjg_h2o5xZ0j';
+const AUTH=SUPA_URL+'/auth/v1', REST=SUPA_URL+'/rest/v1';
+const H={'apikey':SUPA_KEY,'Content-Type':'application/json'};
+const SESS_KEY=KEY+'.session', NOBORROW=KEY+'.noborrow', BORROW=['budgetApp.session','hubApp.session'];
+let session=null, sessSrc=null, pushTimer=null, pollTimer=null, serverTs=0, syncState='local';
+
+function readSession(){
+  const keys=[SESS_KEY].concat(localStorage.getItem(NOBORROW)?[]:BORROW);
+  for(const k of keys){
+    try{const raw=localStorage.getItem(k); if(!raw)continue; const s=JSON.parse(raw);
+      if(s&&s.access_token&&s.user&&s.user.id){session=s;sessSrc=k;return}}catch(e){}
+  }
+}
+function authStore(s){
+  session={access_token:s.access_token,refresh_token:s.refresh_token,user:s.user||(session&&session.user)};
+  const j=JSON.stringify(session);
+  // write back to whichever app's key the session came from, so that app isn't logged out
+  // when the refresh token rotates
+  try{localStorage.setItem(SESS_KEY,j); if(sessSrc&&sessSrc!==SESS_KEY)localStorage.setItem(sessSrc,j);
+    localStorage.removeItem(NOBORROW)}catch(e){}
+}
+function authHeaders(){return {...H,'Authorization':'Bearer '+((session&&session.access_token)||'')}}
+async function authSignIn(email,pw){const r=await fetch(AUTH+'/token?grant_type=password',{method:'POST',headers:H,body:JSON.stringify({email,password:pw})});return r.json()}
+async function authSignUp(email,pw){const r=await fetch(AUTH+'/signup',{method:'POST',headers:H,body:JSON.stringify({email,password:pw})});return r.json()}
+async function authRecover(email){try{await fetch(AUTH+'/recover',{method:'POST',headers:H,body:JSON.stringify({email})})}catch(e){}}
+async function authRefresh(){
+  if(!session||!session.refresh_token)return false;
+  try{const r=await fetch(AUTH+'/token?grant_type=refresh_token',{method:'POST',headers:H,body:JSON.stringify({refresh_token:session.refresh_token})});
+    if(!r.ok)return false; const s=await r.json(); if(s&&s.access_token){authStore(s);return true}}catch(e){}
+  return false;
+}
+function signOut(){
+  clearInterval(pollTimer); clearTimeout(pushTimer);
+  try{localStorage.removeItem(SESS_KEY); localStorage.setItem(NOBORROW,'1')}catch(e){}
+  session=null; sessSrc=null; serverTs=0; DB=load(); setSync('local'); adlg.close(); render();
+}
+function setSync(s){
+  syncState=s;
+  const el=document.getElementById('syncPill'); if(!el)return;
+  const map={synced:['Synced','Sessions sync to your account on every device'],
+    saving:['Saving…','Pushing this change to your account'],
+    offline:['Offline','Saved on this device — will sync when the connection is back'],
+    setup:['Setup needed','Signed in, but the hittrax table has not been created yet'],
+    local:['Local only','Saved on this device only — tap to sync across devices']};
+  el.className='pill '+(s==='setup'?'offline':s);
+  el.querySelector('.lbl').textContent=map[s][0]; el.title=map[s][1];
+  const a=document.getElementById('acctState'); if(a)a.innerHTML=accountPanel();
+}
+// merge two docs: sessions union by id (newest mtime wins), tombstones honoured,
+// player/settings from whichever doc was touched last
+function mergeDocs(a,b){
+  const newer=(a.updatedAt||0)>=(b.updatedAt||0)?a:b, older=newer===a?b:a;
+  const out=blank();
+  out.player=newer.player&&newer.player.name!==undefined?newer.player:older.player;
+  out.settings=newer.settings||older.settings||{};
+  out.updatedAt=Math.max(a.updatedAt||0,b.updatedAt||0);
+  const del={};
+  [].concat(a.deleted||[],b.deleted||[]).forEach(d=>{del[d.id]=Math.max(del[d.id]||0,d.ts||0)});
+  const map={};
+  [].concat(a.sessions||[],b.sessions||[]).forEach(s=>{
+    const p=map[s.id]; if(!p||(s.mtime||0)>(p.mtime||0))map[s.id]=s;
+  });
+  Object.keys(del).forEach(id=>{const s=map[id]; if(s&&(s.mtime||0)>del[id])return; delete map[id]});
+  out.sessions=Object.keys(map).map(k=>map[k]);
+  out.deleted=Object.keys(del).map(id=>({id,ts:del[id]}));
+  return out;
+}
+async function cloudGet(retry){
+  if(!session)return undefined;
+  try{
+    const r=await fetch(REST+'/hittrax?user_id=eq.'+session.user.id+'&select=data,updated_at',{headers:authHeaders()});
+    if(r.status===401&&!retry)return (await authRefresh())?cloudGet(true):undefined;
+    if(r.status===404)return 'nosetup';
+    if(!r.ok)throw 0;
+    const rows=await r.json(); return rows[0]||null;
+  }catch(e){return undefined}
+}
+async function cloudSave(retry){
+  if(!session)return;
+  setSync('saving'); const ts=new Date().toISOString();
+  try{
+    const r=await fetch(REST+'/hittrax?on_conflict=user_id',{method:'POST',
+      headers:{...authHeaders(),'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body:JSON.stringify({user_id:session.user.id,data:DB,updated_at:ts})});
+    if(r.status===401&&!retry){ if(await authRefresh())return cloudSave(true); setSync('offline'); return; }
+    if(r.status===404){setSync('setup');return}
+    if(!r.ok)throw 0;
+    serverTs=new Date(ts).getTime(); setSync('synced');
+  }catch(e){setSync('offline')}
+}
+function queuePush(){ if(!session)return; clearTimeout(pushTimer); pushTimer=setTimeout(()=>cloudSave(),800); }
+function busy(){ // don't yank the page out from under an open form
+  const a=document.activeElement;
+  return (dlg.open||adlg.open||(a&&(a.tagName==='TEXTAREA'||a.tagName==='INPUT'||a.tagName==='SELECT')));
+}
+async function pullMerge(initial){
+  if(!session)return;
+  const row=await cloudGet();
+  if(row===undefined){setSync('offline');return}
+  if(row==='nosetup'){setSync('setup');return}
+  if(row&&row.data&&row.data.sessions){
+    const merged=mergeDocs(DB,row.data);
+    const changed=JSON.stringify(merged)!==JSON.stringify(DB);
+    if(changed&&!busy()){DB=merged;saveLocal();render()}
+    else if(changed&&initial){DB=merged;saveLocal()}
+    serverTs=new Date(row.updated_at).getTime(); setSync('synced');
+    // local had something the cloud didn't — push the union back
+    if(JSON.stringify(merged)!==JSON.stringify(row.data)&&!busy())await cloudSave();
+  }else{ await cloudSave(); }   // first run on this account: create the row
+}
+function startSync(){
+  clearInterval(pollTimer);
+  if(!session){setSync('local');return}
+  pullMerge(true);
+  pollTimer=setInterval(()=>{if(!document.hidden)pullMerge()},12000);
+}
+
+/* ---------- account UI ---------- */
+function accountPanel(){
+  if(!session)return `<div class="hint">Not signed in — sessions are saved on this device only.</div>`;
+  const label={synced:['g','Synced'],saving:['a','Saving…'],offline:['r','Offline'],
+    setup:['r','Table not created yet'],local:['','Local only']}[syncState]||['','—'];
+  return `<div class="row" style="align-items:center;gap:8px">
+    <span class="chip ${label[0]}">${label[1]}</span>
+    <span style="font-size:13px;color:var(--dim)">${esc(session.user.email||'')}</span></div>
+    ${syncState==='setup'?`<div class="note warn" style="margin-top:10px">The <b>hittrax</b> table doesn't exist in Supabase yet.
+      Run <span class="mono">supabase-setup.sql</span> once in the Supabase SQL editor, then reload — everything logged here is safe on this device in the meantime.</div>`:''}`;
+}
+function openAccount(){
+  document.getElementById('adlgBody').innerHTML=session?`
+    <div id="acctState">${accountPanel()}</div>
+    <div class="hint" style="margin-top:12px">Sessions logged on any device signed in to this account merge together —
+      nothing overwrites anything, and deletes carry across too.</div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn sec" onclick="pullMerge();">Sync now</button>
+      <button class="btn ghost" onclick="signOut()">Sign out on this device</button></div>`
+   :`<div class="hint">Sign in with the same email and password you use for the Budget app — sessions then follow you
+      from the cage to the couch. Everything already logged on this device gets merged in, not replaced.</div>
+    <div class="grid" style="grid-template-columns:1fr;gap:10px;margin-top:12px">
+      <div><label>Email</label><input id="a_email" type="email" autocomplete="username" value="${esc(guessEmail())}"></div>
+      <div><label>Password</label><input id="a_pw" type="password" autocomplete="current-password"></div>
+    </div>
+    <div id="a_msg" style="font-size:13px;color:var(--dim);margin-top:10px;min-height:18px"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" onclick="doSignIn()">Sign in</button>
+      <button class="btn sec" onclick="doSignUp()">Create account</button>
+      <button class="btn ghost" onclick="doRecover()">Forgot password</button></div>`;
+  adlg.showModal();
+  const pw=document.getElementById('a_pw');
+  if(pw)pw.onkeydown=e=>{if(e.key==='Enter')doSignIn()};
+}
+function guessEmail(){
+  for(const k of BORROW){try{const s=JSON.parse(localStorage.getItem(k)); if(s&&s.user&&s.user.email)return s.user.email}catch(e){}}
+  return '';
+}
+function amsg(t,err){const e=document.getElementById('a_msg'); if(e){e.textContent=t;e.style.color=err?'var(--red)':'var(--dim)'}}
+async function afterAuth(){
+  sessSrc=SESS_KEY; adlg.close();
+  const local=DB; DB=load(); DB=mergeDocs(DB,local); saveLocal();  // keep what this device already had
+  render(); await pullMerge(true); startSync(); render();
+}
+async function doSignIn(){
+  const e=document.getElementById('a_email').value.trim(), p=document.getElementById('a_pw').value;
+  if(!e||!p){amsg('Enter your email and password.',true);return}
+  amsg('Signing in…');
+  const r=await authSignIn(e,p);
+  if(r&&r.access_token){authStore(r);afterAuth()}
+  else amsg((r&&(r.error_description||r.msg||r.error))||'Sign-in failed.',true);
+}
+async function doSignUp(){
+  const e=document.getElementById('a_email').value.trim(), p=document.getElementById('a_pw').value;
+  if(!e||p.length<6){amsg('Enter an email and a password of at least 6 characters.',true);return}
+  amsg('Creating account…');
+  const r=await authSignUp(e,p);
+  if(r&&r.access_token){authStore(r);afterAuth()}
+  else if(r&&(r.id||r.user||r.confirmation_sent_at!==undefined))amsg('Account created — check your email to confirm, then sign in.');
+  else amsg((r&&(r.error_description||r.msg||r.error))||'Sign-up failed.',true);
+}
+async function doRecover(){
+  const e=document.getElementById('a_email').value.trim();
+  if(!e){amsg('Enter your email first.',true);return}
+  await authRecover(e); amsg('If that account exists, a reset email is on its way.');
+}
 
 /* ============================== reference data ============================== */
 // Max exit-velocity reference ranges (controlled/tee work). Sources: Bat Digest & Baseball Mode age charts.
@@ -593,6 +797,7 @@ function saveSession(){
     if(sum.hha!=null&&sum.hha<=1)sum.hha*=100;   // accept .450 or 45
     s.summary=sum;
   }
+  s.mtime=Date.now();
   DB.sessions.push(s); save(); PARSED=[]; go('dash');
 }
 
@@ -666,7 +871,9 @@ function openSession(id){
 }
 function delSession(id){
   if(!confirm('Delete this session? This cannot be undone.'))return;
-  DB.sessions=DB.sessions.filter(s=>s.id!==id); save(); dlg.close(); render();
+  DB.sessions=DB.sessions.filter(s=>s.id!==id);
+  DB.deleted.push({id,ts:Date.now()});      // tombstone, so the delete syncs instead of the row coming back
+  save(); dlg.close(); render();
 }
 
 /* ---------- report ---------- */
@@ -720,8 +927,13 @@ function vData(){
    </div>
    <div style="margin-top:12px"><button class="btn" onclick="savePlayer()">Save</button></div></div>
 
+   <div class="card"><h2>Sync across devices</h2>
+   <div class="hint">Sign in with your Wilson Dashboard account and every device shares one history — log on the phone at the cage, read it on the laptop.</div>
+   <div id="acctState">${accountPanel()}</div>
+   <div class="row" style="margin-top:12px"><button class="btn ${session?'sec':''}" onclick="openAccount()">${session?'Manage sync':'Sign in to sync'}</button></div></div>
+
    <div class="card"><h2>Backup &amp; transfer</h2>
-   <div class="hint">Data lives in this browser only. Export before switching phones or clearing history.</div>
+   <div class="hint">${session?'Synced to your account — an export is still the belt-and-braces copy.':'Data lives in this browser only. Export before switching phones or clearing history.'}</div>
    <div class="row"><button class="btn sec" onclick="expJSON()">Export backup (.json)</button>
      <button class="btn sec" onclick="expCSV()">Export sessions (.csv)</button>
      <button class="btn ghost" onclick="document.getElementById('imp').click()">Import backup</button>
@@ -765,18 +977,27 @@ function impJSON(inp){
   const f=inp.files[0]; if(!f)return; const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);
     if(!d.sessions)throw new Error('Not a tracker backup');
-    if(!confirm(`Import ${d.sessions.length} sessions? This replaces what's here now.`))return;
-    DB=Object.assign(blank(),d); save(); render(); alert('Imported.');
+    if(!confirm(`Import ${d.sessions.length} sessions? They merge in with what's already here — nothing is replaced.`))return;
+    const inc=Object.assign(blank(),d); inc.updatedAt=Date.now();
+    inc.sessions.forEach(s=>{if(!s.id)s.id=uid(); if(!s.mtime)s.mtime=1});
+    DB=mergeDocs(DB,inc); save(); render(); alert('Imported.');
   }catch(e){alert('Import failed: '+e.message)} };
   r.readAsText(f); inp.value='';
 }
 function wipe(){
   if(!confirm('Erase all sessions and player info?'))return;
   if(!confirm('Really erase? Export a backup first if you want to keep it.'))return;
-  DB=blank(); save(); render();
+  const ts=Date.now(), tombs=DB.sessions.map(s=>({id:s.id,ts}));   // so the erase syncs to your other devices too
+  DB=blank(); DB.deleted=tombs; save(); render();
 }
 
+/* ============================== boot ============================== */
+readSession();
+DB=load();
 render();
+setSync(session?'saving':'local');
+startSync();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&session)pullMerge()});
 </script>
 </body>
 </html>
