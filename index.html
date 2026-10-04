@@ -645,6 +645,8 @@ const ALIAS={
   zone:['strikezone','zone','pitchzone','szone'],
   sprayx:['spraychartx','sprayx'],
   sprayz:['spraychartz','sprayz'],
+  poix:['poix'], poiy:['poiy'], poiz:['poiz'],
+  szbot:['strikezonebottom'], sztop:['strikezonetop'], szwidth:['strikezonewidth'],
   user:['user','player','playername','name','hitter','batter'],
   level:['level','age','agegroup','division']
 };
@@ -990,23 +992,24 @@ function popChart(T){
    vertical tiers are unambiguous in the exports (zone 11 sits high, 12/13 low, 1-3 top row,
    4-6 middle, 7-9 bottom); left/right is inferred, so every cell is labelled with its number. */
 const ZGRID=[[1,2,3],[4,5,6],[7,8,9]], ZOUT={10:'tl',11:'tr',12:'bl',13:'br'};
-const ZMETRICS={avgEV:'Avg exit velo',hha:'Hard-hit %',count:'Balls'};
+const ZMETRICS={avgEV:'Avg exit velo',hha:'Hard-hit %',avg:'Batting avg',count:'Balls'};
 let ZM='avgEV';
 function zoneAgg(balls){
   const by={};
   balls.forEach(b=>{const z=num(b.zone); if(z==null)return;
     (by[z]=by[z]||[]).push(b)});
   const out={};
-  Object.keys(by).forEach(z=>{const g=by[z], evs=g.map(x=>+x.ev);
+  Object.keys(by).forEach(z=>{const g=by[z], evs=g.map(x=>+x.ev), o=outcomeLine(g);
     out[z]={count:g.length, avgEV:evs.reduce((a,c)=>a+c,0)/g.length,
             hha:g.filter(x=>+x.ev>=HH()).length/g.length*100,
-            maxEV:Math.max(...evs)}});
+            avg:o?o.avg:null, ab:o?o.ab:0, maxEV:Math.max(...evs)}});
   return out;
 }
 function zoneMap(balls){
   const agg=zoneAgg(balls);
   const zs=Object.keys(agg); if(!zs.length)return'';
-  const vals=zs.map(z=>agg[z][ZM]).filter(v=>v!=null);
+  const vals=zs.map(z=>agg[z][ZM]).filter(v=>v!=null&&!isNaN(v));
+  if(!vals.length)return '<div class="hint">No data for that metric yet.</div>';
   const lo=Math.min(...vals), hi=Math.max(...vals);
   const heat=v=>{ if(v==null)return'#111b2e';
     const f=hi>lo?(v-lo)/(hi-lo):0.6;
@@ -1014,7 +1017,8 @@ function zoneMap(balls){
     const x=f*(stops.length-1), i=Math.min(stops.length-2,Math.floor(x)), k=x-i;
     const c=stops[i].map((s,j)=>Math.round(s+(stops[i+1][j]-s)*k));
     return `rgb(${c[0]},${c[1]},${c[2]})`;};
-  const val=a=>ZM==='count'?a.count:(ZM==='hha'?Math.round(a.hha)+'%':a.avgEV.toFixed(1));
+  const val=a=>ZM==='count'?a.count:(ZM==='hha'?Math.round(a.hha)+'%'
+    :(ZM==='avg'?(a.avg==null?'—':avg3(a.avg)):a.avgEV.toFixed(1)));
   const tip=z=>{const a=agg[z];
     return `Zone ${z}${a?` — ${a.count} ball${a.count>1?'s':''}, avg ${a.avgEV.toFixed(1)} mph, max ${a.maxEV.toFixed(1)} mph, ${Math.round(a.hha)}% hard hit`:' — no balls'}`};
   const W=380,H=420, mx=72,my=74, iw=W-2*mx, ih=H-2*my;
@@ -1048,8 +1052,8 @@ function zoneMap(balls){
     <rect x="${mx}" y="${my}" width="${iw}" height="${ih}" fill="none" stroke="#e9eefb" stroke-width="2.5"/>
     <rect x="0.75" y="0.75" width="${W-1.5}" height="${H-1.5}" fill="none" stroke="#27395c"/></svg>
    <div class="legend"><span>Catcher's view · white box = strike zone · outer ring = balls</span>
-     ${lo===hi?'':`<span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${ZM==='count'?lo:(ZM==='hha'?Math.round(lo)+'%':lo.toFixed(1))}
-       <i style="background:${heat(hi)};margin-left:8px"></i>${ZM==='count'?hi:(ZM==='hha'?Math.round(hi)+'%':hi.toFixed(1))}</span>`}</div>
+     ${lo===hi?'':`<span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${ZM==='count'?lo:(ZM==='hha'?Math.round(lo)+'%':(ZM==='avg'?avg3(lo):lo.toFixed(1)))}
+       <i style="background:${heat(hi)};margin-left:8px"></i>${ZM==='count'?hi:(ZM==='hha'?Math.round(hi)+'%':(ZM==='avg'?avg3(hi):hi.toFixed(1)))}</span>`}</div>
    ${zs.some(z=>agg[z].count<3)?'<div class="hint" style="margin-top:6px">Cells with one or two balls are shown faded — too small a sample to read anything into.</div>':''}`;
 }
 /* HitTrax simulates the result of every ball in play against a defence — that's where its
@@ -1092,6 +1096,81 @@ function outcomeCard(balls,where){
         `<div title="${b[0]}" style="width:${o.c[b[0]]/o.ab*100}%;background:${HITCOL[b[0]]}"></div>`).join('')}
     </div></div>`;
 }
+/* The hitter's own strike zone, as the export measures it, with the contact point of every
+   ball plotted in it. HitTrax exports POI X/Y (where the bat met the ball) rather than the
+   pitch's own coordinates — the pitch itself is only located by its zone number. */
+function plateChart(balls){
+  const b=balls.filter(x=>num(x.poiy)!=null&&+x.poiy>1);
+  if(b.length<2)return'';
+  const zb=num((b.find(x=>num(x.szbot)!=null)||{}).szbot)||18;
+  const zt=num((b.find(x=>num(x.sztop)!=null)||{}).sztop)||40;
+  const W=400,H=390,P={l:46,r:16,t:18,b:52};
+  const hiY=Math.max(zt+8,...b.map(x=>+x.poiy))+3;
+  const Y=v=>P.t+(H-P.t-P.b)*(1-v/hiY);
+  // horizontal position comes from the pitch's zone column — the one piece of left/right the
+  // export actually gives. 1/4/7 left, 2/5/8 middle, 3/6/9 right, 10/12 and 11/13 off the plate.
+  const COL={1:1,4:1,7:1,2:2,5:2,8:2,3:3,6:3,9:3,10:0,12:0,11:4,13:4};
+  const lanes=5, laneW=(W-P.l-P.r)/lanes;
+  const laneX=i=>P.l+laneW*(i+0.5);
+  const zx1=P.l+laneW, zx2=P.l+laneW*4;
+  const evs=b.map(x=>+x.ev).filter(v=>v>0), lo=Math.min(...evs), hi=Math.max(...evs);
+  const heat=v=>{const f=hi>lo?(v-lo)/(hi-lo):.6;
+    const s=[[61,109,240],[47,191,113],[242,177,60],[250,70,22]];
+    const x=f*(s.length-1), i=Math.min(s.length-2,Math.floor(x)), k=x-i;
+    const c=s[i].map((q,j)=>Math.round(q+(s[i+1][j]-q)*k)); return `rgb(${c[0]},${c[1]},${c[2]})`};
+  let grid='';
+  for(let h=10;h<hiY;h+=10)grid+=`<line x1="${P.l}" x2="${W-P.r}" y1="${Y(h).toFixed(1)}" y2="${Y(h).toFixed(1)}" stroke="#27395c"/>
+    <text x="${P.l-6}" y="${(Y(h)+4).toFixed(1)}" fill="#6c7fa5" font-size="10" text-anchor="end">${h}"</text>`;
+  let zone=`<rect x="${zx1.toFixed(1)}" y="${Y(zt).toFixed(1)}" width="${(zx2-zx1).toFixed(1)}"
+      height="${(Y(zb)-Y(zt)).toFixed(1)}" fill="rgba(233,238,251,.06)" stroke="#e9eefb" stroke-width="2"/>`;
+  for(let i=1;i<3;i++){
+    const xx=zx1+(zx2-zx1)*i/3, yy=Y(zb+(zt-zb)*i/3);
+    zone+=`<line x1="${xx.toFixed(1)}" y1="${Y(zt).toFixed(1)}" x2="${xx.toFixed(1)}" y2="${Y(zb).toFixed(1)}" stroke="rgba(233,238,251,.28)"/>
+      <line x1="${zx1.toFixed(1)}" y1="${yy.toFixed(1)}" x2="${zx2.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="rgba(233,238,251,.28)"/>`;}
+  const dots=b.map((x,i)=>{
+    const lane=COL[num(x.zone)]!=null?COL[num(x.zone)]:2;
+    const jitter=((i*37)%100/100-0.5)*laneW*0.62;        // deterministic spread inside the lane
+    const cx=laneX(lane)+jitter, cy=Y(+x.poiy);
+    return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${x.ev>0?heat(+x.ev):'#93a4c6'}"
+      stroke="#0b1220" stroke-width="1.2" opacity=".92"><title>${(+x.ev||0).toFixed(1)} mph, met at ${(+x.poiy).toFixed(1)}" high${
+      num(x.zone)!=null?` · zone ${x.zone}`:''}${x.result?' — '+x.result:''}</title></circle>`}).join('');
+  const labels=['Off plate','Left third','Middle','Right third','Off plate']
+    .map((l,i)=>`<text x="${laneX(i).toFixed(1)}" y="${H-P.b+18}" fill="#6c7fa5" font-size="9.5" text-anchor="middle">${l}</text>`).join('');
+  const pw=(zx2-zx1)*0.9, px=(zx1+zx2)/2, py=H-P.b+32;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="max-width:${W}px;margin:0 auto">
+    ${grid}${zone}${dots}${labels}
+    <path d="M${px-pw/2} ${py-7} L${px+pw/2} ${py-7} L${px+pw/2} ${py} L${px} ${py+8} L${px-pw/2} ${py} Z" fill="#94a3c7" opacity=".5"/>
+    <text x="${(zx2+8).toFixed(1)}" y="${(Y(zt)+4).toFixed(1)}" fill="#93a4c6" font-size="9.5">zone top ${zt.toFixed(0)}"</text>
+    <text x="${(zx2+8).toFixed(1)}" y="${(Y(zb)+4).toFixed(1)}" fill="#93a4c6" font-size="9.5">bottom ${zb.toFixed(0)}"</text>
+   </svg>
+   <div class="legend"><span>Catcher's view · height is where the bat met the ball</span>
+     <span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${lo.toFixed(0)} mph
+       <i style="background:${heat(hi)};margin-left:8px"></i>${hi.toFixed(0)} mph</span></div>`;
+}
+function plateCard(balls){
+  const chart=plateChart(balls); if(!chart)return'';
+  return `<div class="card"><h2>Contact point in the zone</h2>
+   <div class="hint">Height is the measured contact point, against this hitter's own zone from the export
+     (${(()=>{const b=balls.find(x=>num(x.szbot)!=null)||{};return b.szbot?`${(+b.szbot).toFixed(0)}–${(+b.sztop).toFixed(0)} in`:'default zone'})()}).
+     Left-to-right is the pitch's zone column — the export gives no pitch coordinates, only the zone number.</div>
+   ${chart}</div>`;
+}
+// in-zone (1-9) against chased pitches (10-13)
+function zoneSplit(balls){
+  const b=balls.filter(x=>num(x.zone)!=null);
+  if(!b.length)return'';
+  const group=inZone=>b.filter(x=>inZone?(+x.zone>=1&&+x.zone<=9):(+x.zone>=10));
+  const rows=[['In the zone',group(true)],['Out of the zone',group(false)]].filter(r=>r[1].length);
+  if(rows.length<2)return'';
+  const cell=(g)=>{const st=computeFromBalls(g,HH()), o=outcomeLine(g);
+    return `<td>${g.length}</td><td style="font-weight:700">${fmt('avgEV',st.avgEV)}</td>
+      <td>${Math.round(st.hha)}%</td><td>${st.ld!=null?Math.round(st.ld)+'%':'—'}</td>
+      <td>${o?avg3(o.avg):'—'}</td><td>${o?avg3(o.slg):'—'}</td>`};
+  return `<div style="margin-top:16px"><label>By pitch location</label>
+   <div class="scroll"><table><thead><tr><th>Pitches</th><th>Balls</th><th>Avg EV</th><th>Hard-hit</th><th>LD%</th><th>AVG</th><th>SLG</th></tr></thead><tbody>`+
+   rows.map(r=>`<tr><td>${r[0]}</td>${cell(r[1])}</tr>`).join('')+
+   `</tbody></table></div></div>`;
+}
 function zoneCard(balls,where){
   if(!balls.some(b=>num(b.zone)!=null))return'';
   const n=balls.filter(b=>num(b.zone)!=null).length;
@@ -1099,7 +1178,7 @@ function zoneCard(balls,where){
      <div><h2>Strike-zone heat map</h2><div class="hint">${n} batted ball${n>1?'s':''} ${where}</div></div>
      <div class="seg" style="margin-left:auto">${Object.keys(ZMETRICS).map(k=>
        `<button class="${ZM===k?'on':''}" onclick="ZM='${k}';render()">${ZMETRICS[k]}</button>`).join('')}</div></div>
-   ${zoneMap(balls)}</div>`;
+   ${zoneMap(balls)}${zoneSplit(balls)}</div>`;
 }
 function mixBar(s){
   const parts=[['gb','#f2b13c','GB'],['ld','#2fbf71','LD'],['fb','#3d6df0','FB'],['pu','#ef4d5a','PU']]
@@ -1194,6 +1273,7 @@ function vDash(){
   ${b?(cat?popBenchCard(st,b):benchCard(st,b)):''}
   ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
+  ${cat?'':plateCard(last.balls||[])}
   ${cat?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
   <div class="card"><h2>${MK[cat?'avgPop':'maxEV'].n} trend</h2>
@@ -1717,7 +1797,8 @@ function openSession(id){
        <td>${x.outcome&&x.pop>0?(x.outcome==='out'?'<span class="chip g">out</span>':'<span class="chip r">safe</span>'):'—'}</td>
        <td>${cl==='clean'?'':(cl==='misfire'?'<span class="chip a">misfire</span>':'<span class="chip">no throw</span>')}</td></tr>`}).join('')+
      `</tbody></table></div></div>`:''}
-   ${balls.some(b=>num(b.zone)!=null)?`<div style="margin-top:18px"><label>Strike-zone heat map — ${ZMETRICS[ZM].toLowerCase()}</label>${zoneMap(balls)}</div>`:''}
+   ${plateChart(balls)?`<div style="margin-top:18px"><label>Contact point in the zone</label>${plateChart(balls)}</div>`:''}
+   ${balls.some(b=>num(b.zone)!=null)?`<div style="margin-top:18px"><label>Strike-zone heat map — ${ZMETRICS[ZM].toLowerCase()}</label>${zoneMap(balls)}${zoneSplit(balls)}</div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
    ${balls.some(b=>landing(b))?`<div style="margin-top:18px"><label>Spray chart</label>${fieldChart(balls)}</div>`:''}
    ${s.notes?`<div style="margin-top:16px"><label>Notes</label><div style="background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px">${esc(s.notes)}</div></div>`:''}

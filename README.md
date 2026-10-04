@@ -89,11 +89,22 @@ dashboard and each session show that line: batting average with hits over at-bat
 bases, outs, and a count of each outcome (1B x 15, Out x 15 ...). Fouls are excluded, as they are
 not at-bats.
 
+### Pitch location
+Three views of the same thing:
+
+- **Contact point in the zone** - the hitter's own strike zone, taken from the export's
+  `Strike Zone Bottom/Top/Width`, with every ball plotted at its measured contact height and
+  coloured by exit velo. Left-to-right is the pitch's zone column, because the export gives no
+  pitch coordinates - only the zone number. (`POI X` is in the file but doesn't behave like a
+  clean left/right coordinate, so it is deliberately not used as one.)
+- **By pitch location** - in-zone (1-9) against chased pitches (10-13): balls, avg EV, hard-hit %,
+  LD%, and the simulated AVG and SLG for each.
+
 ### Strike-zone heat map
 HitTrax tags every pitch with a zone (1-9 inside the strike zone, 10-13 the out-of-zone
 quadrants). The dashboard draws those as a heat map across every logged session - inner 3x3 grid
 inside the zone box, four quadrants in the ring around it - coloured by average exit velo,
-hard-hit % or ball count, with the same map per session in the session detail. Cells with one or
+hard-hit %, simulated batting average or ball count, with the same map per session in the session detail. Cells with one or
 two balls are faded; the zone number sits in every cell so the layout can be checked against
 HitTrax's own display. The left/right halves are inferred from the exports - the vertical tiers
 are unambiguous in the data, the horizontal is not - so flag it if your zone grid is mirrored.
