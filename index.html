@@ -1147,6 +1147,27 @@ function plateChart(balls){
      <span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${lo.toFixed(0)} mph
        <i style="background:${heat(hi)};margin-left:8px"></i>${hi.toFixed(0)} mph</span></div>`;
 }
+/* Rounds logged before a column was understood simply don't carry it, and the cards that need
+   it render nothing — which looks like a missing feature. Say so, and say what fixes it. */
+function dataGaps(balls){
+  if(!balls||!balls.length)return [];
+  const g=[];
+  if(!balls.some(b=>b.result))g.push('play outcomes — no simulated at-bats, and spray dots fall back to batted-ball type');
+  if(!balls.some(b=>num(b.zone)!=null))g.push('strike zone — no zone heat map and no in/out-of-zone split');
+  if(!balls.some(b=>num(b.poiy)!=null))g.push('contact point — no plate view');
+  if(!balls.some(b=>landing(b)))g.push('landing coordinates — no spray chart');
+  return g;
+}
+function gapsCard(balls){
+  const g=dataGaps(balls); if(!g.length)return'';
+  return `<div class="card note warn">
+    <b>This round is missing data the app can now read.</b>
+    <ul class="tight">${g.map(x=>'<li>'+x+'</li>').join('')}</ul>
+    <div style="margin-top:10px">Re-upload the same CSV and it refreshes that round in place — no duplicate, and the
+      type, grouping and notes stay as they are.</div>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="LOGKIND=VIEWKIND;go('log')">Re-upload the CSV</button></div>
+  </div>`;
+}
 function plateCard(balls){
   const chart=plateChart(balls); if(!chart)return'';
   return `<div class="card"><h2>Contact point in the zone</h2>
@@ -1271,6 +1292,7 @@ function vDash(){
     ${cat?popSplit(st):''}
   </div>
   ${b?(cat?popBenchCard(st,b):benchCard(st,b)):''}
+  ${cat?'':gapsCard(last.balls)}
   ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
   ${cat?'':plateCard(last.balls||[])}
@@ -1797,6 +1819,9 @@ function openSession(id){
        <td>${x.outcome&&x.pop>0?(x.outcome==='out'?'<span class="chip g">out</span>':'<span class="chip r">safe</span>'):'—'}</td>
        <td>${cl==='clean'?'':(cl==='misfire'?'<span class="chip a">misfire</span>':'<span class="chip">no throw</span>')}</td></tr>`}).join('')+
      `</tbody></table></div></div>`:''}
+   ${balls.length&&dataGaps(balls).length?`<div class="note warn" style="margin-top:16px">Logged before the app read
+     ${dataGaps(balls).length} of HitTrax's columns — re-upload this CSV to fill in
+     ${dataGaps(balls).map(x=>x.split(' — ')[0]).join(', ')}.</div>`:''}
    ${plateChart(balls)?`<div style="margin-top:18px"><label>Contact point in the zone</label>${plateChart(balls)}</div>`:''}
    ${balls.some(b=>num(b.zone)!=null)?`<div style="margin-top:18px"><label>Strike-zone heat map — ${ZMETRICS[ZM].toLowerCase()}</label>${zoneMap(balls)}${zoneSplit(balls)}</div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
