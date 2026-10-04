@@ -74,6 +74,19 @@ Definitions: GB <10 deg, LD 10-25, FB 25-50, PU >50. Sweet spot = 8-32 deg.
 Hard hit = at or above the threshold on the Player & Data tab (defaults to the age group's
 "good" floor). Barrel = hard hit AND 8-32 deg.
 
+### Spray chart on a real field
+Balls in play are plotted on a drawn field - dirt infield, foul lines, fence arc with distance
+rings - using the export's own `Spray Chart X/Z` landing coordinates when present, and distance
+plus horizontal angle when not. Dots are coloured by the simulated outcome (single / double /
+triple / home run / out), and the fence is drawn at 300 ft or further if the hits need it, so the
+picture stays field-shaped rather than zooming to a 12U cage.
+
+### Simulated at-bats
+HitTrax plays every ball in play against a defence - that's where its AVG and SLG come from. The
+dashboard and each session show that line: batting average with hits over at-bats, slugging, total
+bases, outs, and a count of each outcome (1B x 15, Out x 15 ...). Fouls are excluded, as they are
+not at-bats.
+
 ### Strike-zone heat map
 HitTrax tags every pitch with a zone (1-9 inside the strike zone, 10-13 the out-of-zone
 quadrants). The dashboard draws those as a heat map across every logged session - inner 3x3 grid
