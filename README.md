@@ -15,6 +15,25 @@ from HitTrax data. No install, no server needed — open the file, or run the lo
    before saving); pitch speed is averaged from the file when you leave that field blank.
 2. **Type the summary** — key in whatever the HitTrax session report screen shows.
 
+## Two disciplines
+A **Hitting / Catching** switch sits under the tabs (it appears once a catching session exists).
+Each discipline keeps its own sessions, trends, personal bests, benchmarks and report.
+
+### Catching
+HitTrax's catching module measures the throw to second: **pop time**, **exchange (transfer) time**,
+**arm strength** (peak throw velocity), **throw accuracy** and a projected **out / safe** call.
+Upload that export the same way as a hitting CSV, or type the session summary. The app adds:
+- Best / average / top-25% pop time, best and average exchange, max and average arm strength
+- On-target % (within 24 in of the bag, or the file's own flag) and projected outs %
+- A "where the pop time goes" split - exchange vs. ball flight - which says whether footwork or
+  arm strength is the thing worth training
+- Pop time by throw, with the age benchmark lines drawn behind it
+- Age benchmarks for pop time (lower is better), from the NextCommit / TopVelocity / Catching-101 charts
+
+Column names are auto-detected (Pop Time, Exchange / Transfer, Velo / Arm Strength, Accuracy / Miss,
+Outcome, Base, Date). Milliseconds are converted to seconds, feet to inches. Anything it doesn't
+recognise is listed under the preview so the aliases can be extended.
+
 ## What it tracks
 Max EV, Avg EV, Top-25% Avg EV, hard-hit average, barrel %, avg launch angle, sweet-spot LA %,
 LD / FB / GB / PU mix, max & avg distance, BA, SLG, balls in play.

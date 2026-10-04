@@ -97,6 +97,11 @@ tr.clickable:hover td{background:var(--card2)}
 ul.tight{margin:8px 0 0;padding-left:18px;font-size:13.5px}
 ul.tight li{margin:5px 0}
 svg{display:block;max-width:100%}
+.kindbar{display:flex;align-items:center;gap:9px;padding:0 0 9px;font-size:11.5px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--dim2);font-weight:700}
+.kindbar .seg{padding:2px}
+.kindbar .seg button{padding:5px 11px;font-size:12.5px}
+.kindbar .count{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:600;color:var(--dim)}
 .drop{border:2px dashed var(--line);border-radius:12px;padding:18px 14px;text-align:center;background:var(--bg2)}
 .drop.over{border-color:var(--orange);background:rgba(250,70,22,.08)}
 .drop .hint{margin:0}
@@ -126,12 +131,13 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
    <div class="logo">⚾</div>
    <div>
      <h1>HitTrax Progress Tracker</h1>
-     <div class="sub" id="hdSub">Session-by-session hitting development</div>
+     <div class="sub" id="hdSub">Session-by-session hitting &amp; catching development</div>
    </div>
    <div class="who" id="who"></div>
    <button class="pill local" id="syncPill" onclick="openAccount()" title="Sync"><i class="dot"></i><span class="lbl">Local only</span></button>
   </div>
   <nav id="nav"></nav>
+  <div id="kindBar"></div>
  </div>
 </header>
 
@@ -361,7 +367,23 @@ const BENCH=[
 ];
 function bench(age){age=+age; if(!age) return null; return BENCH.find(b=>age>=b.min&&age<=b.max)||null;}
 // default hard-hit threshold ≈ the "good" floor for that age
-function hardHitDefault(age){const b=bench(age); return b?b.good[0]:85;}
+// Default hard-hit bar = the bottom of the age group's typical MAX-EV band: "hit at least as
+// hard as a typical kid's best swing". Editable on the Player tab, like HitTrax's own setting.
+function hardHitDefault(age){const b=bench(age); return b?b.avg[0]:85;}
+// Catcher pop time to 2B, seconds — LOWER is better. Sources: NextCommit age chart,
+// TopVelocity level averages, Catching-101. Elite = the number scouts start noticing.
+const POPBENCH=[
+ {label:'8–9',   min:8, max:9,  avg:[2.5,2.9], good:2.40, elite:2.30},
+ {label:'10–11', min:10,max:11, avg:[2.4,2.7], good:2.30, elite:2.20},
+ {label:'12',    min:12,max:12, avg:[2.3,2.6], good:2.20, elite:2.10},
+ {label:'13–14', min:13,max:14, avg:[2.1,2.4], good:2.00, elite:1.95},
+ {label:'15–16', min:15,max:16, avg:[2.0,2.2], good:1.95, elite:1.88},
+ {label:'17–18', min:17,max:18, avg:[1.95,2.15],good:1.90,elite:1.85},
+ {label:'College',min:19,max:22,avg:[1.90,2.05],good:1.88,elite:1.80},
+ {label:'Pro',   min:23,max:99, avg:[1.90,2.00],good:1.85,elite:1.80},
+];
+function popBench(age){age=+age; if(!age)return null; return POPBENCH.find(b=>age>=b.min&&age<=b.max)||null;}
+const ON_TARGET_IN=24;   // a throw landing within 2 ft of the bag counts as on target
 function HH(){return +(DB.settings.hardHit||hardHitDefault(DB.player.age));}
 
 /* ============================== metric definitions ============================== */
@@ -383,8 +405,28 @@ const M=[
  {k:'slg',     n:'Slugging',           u:'',    d:3, dir:'up'},
  {k:'swings',  n:'Balls in Play',      u:'',    d:0, dir:'flat'},
 ];
-const MK=Object.fromEntries(M.map(m=>[m.k,m]));
+// Catching module (HitTrax measures pop time, exchange, arm strength, throw accuracy,
+// and a projected out/safe outcome). Pop and exchange are LOWER-is-better.
+const CM=[
+ {k:'throws',   n:'Throws',             u:'',    d:0, dir:'flat'},
+ {k:'bestPop',  n:'Best Pop Time',      u:'s',   d:2, dir:'down'},
+ {k:'avgPop',   n:'Avg Pop Time',       u:'s',   d:2, dir:'down'},
+ {k:'top25Pop', n:'Top-25% Avg Pop',    u:'s',   d:2, dir:'down'},
+ {k:'bestExch', n:'Best Exchange',      u:'s',   d:2, dir:'down'},
+ {k:'avgExch',  n:'Avg Exchange',       u:'s',   d:2, dir:'down'},
+ {k:'maxVelo',  n:'Max Arm Strength',   u:'mph', d:1, dir:'up'},
+ {k:'avgVelo',  n:'Avg Arm Strength',   u:'mph', d:1, dir:'up'},
+ {k:'onTarget', n:'On-Target %',        u:'%',   d:0, dir:'up'},
+ {k:'outPct',   n:'Projected Outs %',   u:'%',   d:0, dir:'up'},
+ {k:'avgMiss',  n:'Avg Miss from Bag',  u:'in',  d:1, dir:'down'},
+];
+const MK=Object.fromEntries(M.concat(CM).map(m=>[m.k,m]));
 const CORE=['maxEV','avgEV','hha','sweet','ld','avgLA'];
+const CCORE=['bestPop','avgPop','avgExch','maxVelo','onTarget','outPct'];
+const KIND={hitting:{label:'Hitting',icon:'⚾',metrics:M,core:CORE,unit:'balls in play'},
+            catching:{label:'Catching',icon:'🧤',metrics:CM,core:CCORE,unit:'throws'}};
+const kindOf=s=>s.kind||'hitting';
+let VIEWKIND='hitting';
 
 /* ============================== computation ============================== */
 // Launch-angle buckets (HitTrax-style): GB <10, LD 10–25, FB 25–50, PU >50
@@ -398,7 +440,9 @@ function computeFromBalls(balls,hh){
   const las=b.filter(x=>x.la!=null&&!isNaN(x.la)).map(x=>+x.la);
   const dists=b.filter(x=>x.dist!=null&&!isNaN(x.dist)&&x.dist>0).map(x=>+x.dist);
   const cnt={gb:0,ld:0,fb:0,pu:0}; let cls=0;
-  b.forEach(x=>{const k=bucket(x.la); if(k){cnt[k]++;cls++;}});
+  // HitTrax labels each ball itself (the Type column) — use its label when the export has
+  // one so these percentages match the report, and fall back to launch-angle buckets.
+  b.forEach(x=>{const k=x.btype||bucket(x.la); if(k&&cnt[k]!==undefined){cnt[k]++;cls++;}});
   const hard=b.filter(x=>+x.ev>=hh).length;
   const barrel=b.filter(x=>+x.ev>=hh && x.la!=null && +x.la>=8 && +x.la<=32).length;
   const sweet=las.filter(v=>v>=8&&v<=32).length;
@@ -425,11 +469,46 @@ function computeFromBalls(balls,hh){
   }
   return s;
 }
+function computeFromThrows(T){
+  const t=(T||[]).filter(x=>num(x.pop)!=null||num(x.velo)!=null);
+  if(!t.length)return null;
+  const pops=t.map(x=>num(x.pop)).filter(v=>v!=null&&v>0.5&&v<6).sort((a,b)=>a-b);
+  const exch=t.map(x=>num(x.exch)).filter(v=>v!=null&&v>0&&v<3);
+  const velos=t.map(x=>num(x.velo)).filter(v=>v!=null&&v>10&&v<120);
+  const miss=t.map(x=>num(x.miss)).filter(v=>v!=null&&v>=0);
+  const called=t.filter(x=>x.outcome==='out'||x.outcome==='safe');
+  const avg=a=>a.length?a.reduce((x,c)=>x+c,0)/a.length:null;
+  const topN=Math.max(1,Math.round(pops.length*0.25));
+  // on target = an explicit flag from the file, else a miss inside ON_TARGET_IN
+  const flagged=t.filter(x=>x.ontarget===true||x.ontarget===false);
+  let onTarget=null;
+  if(flagged.length)onTarget=flagged.filter(x=>x.ontarget===true).length/flagged.length*100;
+  else if(miss.length)onTarget=miss.filter(v=>v<=ON_TARGET_IN).length/miss.length*100;
+  return {
+    throws:t.length,
+    bestPop:pops.length?pops[0]:null,
+    avgPop:avg(pops),
+    top25Pop:pops.length?avg(pops.slice(0,topN)):null,
+    bestExch:exch.length?Math.min(...exch):null,
+    avgExch:avg(exch),
+    maxVelo:velos.length?Math.max(...velos):null,
+    avgVelo:avg(velos),
+    onTarget,
+    outPct:called.length?called.filter(x=>x.outcome==='out').length/called.length*100:null,
+    avgMiss:avg(miss),
+  };
+}
 function sessionStats(s){
+  if(kindOf(s)==='catching'){
+    if(s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
+    return s.summary||{};
+  }
   if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,HH()); if(c)return c;}
   return s.summary||{};
 }
-const sorted=()=>DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+const sorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
+  .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+const countOf=kind=>DB.sessions.filter(s=>kindOf(s)===kind).length;
 function series(k){return sorted().map(s=>({date:s.date,id:s.id,v:num(sessionStats(s)[k])})).filter(p=>p.v!=null);}
 function num(v){return (v===''||v==null||isNaN(v))?null:+v;}
 function fmt(k,v){ if(v==null)return'—'; const m=MK[k]; const s=(+v).toFixed(m.d);
@@ -442,11 +521,12 @@ function delta(k,i){ // change vs previous session that has this metric
   if(idx<1)return null; return S[idx].v-S[idx-1].v;
 }
 function dirClass(k,d){ if(d==null)return'flat'; const dir=MK[k].dir;
-  if(Math.abs(d)<1e-9)return'flat';
+  if(+(+d).toFixed(decimals(k))===0)return'flat';   // rounds to nothing at the shown precision
   if(dir==='up')return d>0?'up':'down';
   if(dir==='down')return d<0?'up':'down'; return'flat';}
-function dstr(k,d){ if(d==null)return''; const m=MK[k]; const sign=d>0?'+':'';
-  return sign+(+d).toFixed(m.d===3?3:(Math.abs(d)<10?1:0)); }
+function decimals(k){const m=MK[k]; return m.d===3?3:(m.u==='s'?2:(Math.abs(1)<10?1:0));}
+function dstr(k,d){ if(d==null)return''; const v=+(+d).toFixed(decimals(k));
+  return (v>0?'+':'')+v.toFixed(decimals(k)); }
 function rolling(S,w){return S.map((p,i)=>{const sl=S.slice(Math.max(0,i-w+1),i+1);
   return {date:p.date,v:sl.reduce((a,c)=>a+c.v,0)/sl.length}});}
 
@@ -457,10 +537,20 @@ const ALIAS={
   dist:['dist','distance','projdistance','projecteddistance','carry'],
   horiz:['horiz','horizangle','horizontalangle','spray','sprayangle','direction','dir','ha'],
   poi:['poi','pointofimpact','contact','impact'],
-  result:['result','play','playoutcome','outcome','type','hittype','res'],
+  result:['result','play','playoutcome','outcome','res'],
+  btype:['type','hittype','battedballtype','balltype'],
   pitch:['pitchvelo','pitchspeed','pitch','pv'],
-  date:['date','sessiondate','timestamp','datetime','day','sessiontimestamp']
+  date:['date','sessiondate','timestamp','datetime','day','sessiontimestamp'],
+  user:['user','player','playername','name','hitter','batter'],
+  level:['level','age','agegroup','division']
 };
+// HitTrax's own Type column: LD / FB / GB (and PU where present)
+function parseBtype(t){const s=normKey(t);
+  if(s==='ld'||s==='linedrive')return'ld';
+  if(s==='gb'||s==='groundball')return'gb';
+  if(s==='fb'||s==='flyball')return'fb';
+  if(s==='pu'||s==='pop'||s==='popup'||s==='pf')return'pu';
+  return null;}
 function normKey(h){return h.toLowerCase().replace(/[^a-z]/g,'');}
 function mapCol(h){const n=normKey(h); for(const f in ALIAS){if(ALIAS[f].includes(n))return f;} return null;}
 // "9/14/2026 4:32 PM", "2026-09-14", "14-Sep-26" -> 2026-09-14
@@ -499,14 +589,19 @@ function pickDelim(line){
   counts.sort((a,b)=>b[1]-a[1]);
   return counts[0][1]>1?counts[0][0]:null;
 }
-function parseResult(t){ if(!t)return null; const s=(''+t).toLowerCase().trim();
-  if(/home ?run|^hr$|^4$/.test(s))return'hr';
-  if(/triple|^3b$|^3$/.test(s))return'triple';
-  if(/double|^2b$|^2$/.test(s))return'double';
-  if(/single|^1b$|^1$/.test(s))return'single';
+// Handles both plain words and HitTrax's scorebook notation ("1B-8", "F3", "6-3", "E5").
+function parseResult(t){ if(t==null)return null; const s=(''+t).toLowerCase().trim();
+  if(!s)return null;
+  if(/^(hr|home ?run)\b|^hr-/.test(s))return'hr';
+  if(/^3b\b|^3b-|triple/.test(s))return'triple';
+  if(/^2b\b|^2b-|double/.test(s))return'double';
+  if(/^1b\b|^1b-|single/.test(s))return'single';
   if(/foul/.test(s))return'foul';
-  if(/error/.test(s))return'error';
-  if(/out|fly|ground|pop|line ?out|^0$/.test(s))return'out';
+  if(/^e\d|error/.test(s))return'error';
+  if(/^(bb|ibb|hbp|walk)\b/.test(s))return null;        // not an at-bat
+  if(/^(k|so|strikeout)\b/.test(s))return'out';
+  if(/^[fplgu]?\d(-\d)*$/.test(s))return'out';          // F3, P5, L7, 6-3, 4-6-3, 3
+  if(/out|fly|ground|pop|lineout|fc|dp|sac/.test(s))return'out';
   return null;}
 function parsePaste(txt){
   const lines=(txt||'').replace(/^﻿/,'').split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
@@ -528,8 +623,10 @@ function parsePaste(txt){
     const b={};
     if(cols){
       cols.forEach((c,j)=>{ if(!c)return; const raw=parts[j]; if(raw==null||raw==='')return;
-        if(c==='result')b.result=parseResult(raw);
+        if(c==='result'){const r=parseResult(raw); if(r)b.result=r;}
+        else if(c==='btype'){const t=parseBtype(raw); if(t)b.btype=t;}
         else if(c==='poi')b.poi=raw;
+        else if(c==='user'||c==='level')b[c]=raw;
         else if(c==='date'){const d=parseDate(raw); if(d)b.date=d}
         else {const v=numField(raw); if(v!=null)b[c]=v;} });
     }else{
@@ -551,6 +648,68 @@ function parsePaste(txt){
     msg+='.'+(skipped?` ${skipped} row${skipped>1?'s':''} without a usable exit velo skipped.`:'');
   }
   return {balls,msg,dates};
+}
+
+/* ---------- catching export ---------- */
+const CALIAS={
+  pop:['pop','poptime','poptimesec','poptimeseconds','pt','popsec'],
+  exch:['exchange','exchangetime','transfer','transfertime','exch','release','releasetime'],
+  velo:['velo','armstrength','arm','throwvelo','throwvelocity','velocity','speed','mph','throwspeed'],
+  miss:['miss','missdistance','accuracy','acc','distancefrombase','distfrombase','offtarget','error','distancefromtarget','accuracyin'],
+  outcome:['outcome','projectedoutcome','projection','result','call','safeout','projectedresult'],
+  base:['base','targetbase','target','throwto','throwtobase'],
+  diff:['timedifferential','differential','timediff','diff','delta'],
+  date:['date','sessiondate','timestamp','datetime','day'],
+  user:['user','player','playername','name','catcher'],
+  level:['level','agegroup','division']
+};
+function mapCCol(h){const n=normKey(h); for(const f in CALIAS){if(CALIAS[f].includes(n))return f;} return null;}
+function parseOutcome(t){const s=(''+t).toLowerCase().trim();
+  if(/^out\b|safe ?= ?no|caught|^o$/.test(s))return'out';
+  if(/^safe\b|^s$|stolen/.test(s))return'safe';
+  return null;}
+function parseThrows(txt){
+  const lines=(txt||'').replace(/^﻿/,'').split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
+  if(!lines.length)return{throws:[],msg:'Nothing to parse.',dates:[],unmapped:[]};
+  let cols=null,delim=null,hdr=-1,bestN=0,heads=[];
+  for(let i=0;i<Math.min(lines.length,25);i++){
+    const d=pickDelim(lines[i]); if(!d)continue;
+    const parts=splitLine(lines[i],d);
+    const mapped=parts.map(mapCCol), n=mapped.filter(Boolean).length;
+    if(n>bestN&&parts.some(p=>p&&isNaN(parseFloat(p)))){bestN=n;cols=mapped;delim=d;hdr=i;heads=parts}
+  }
+  if(!cols)return{throws:[],msg:'No header row recognized — the file needs a column for pop time or throw velocity.',dates:[],unmapped:[]};
+  const split=l=>splitLine(l,delim);
+  const T=[]; let skipped=0;
+  for(let i=hdr+1;i<lines.length;i++){
+    const parts=split(lines[i]), t={};
+    cols.forEach((c,j)=>{ if(!c)return; const raw=parts[j]; if(raw==null||raw==='')return;
+      if(c==='outcome'){const o=parseOutcome(raw); if(o)t.outcome=o;}
+      else if(c==='base'||c==='user'||c==='level')t[c]=raw;
+      else if(c==='date'){const d=parseDate(raw); if(d)t.date=d}
+      else if(c==='miss'){
+        const v=numField(raw);
+        if(v!=null){ t.miss=/f(ee)?t\.?$|'$/.test((''+raw).trim())?v*12:v;     // "3 ft" -> inches
+          if(/^(yes|no|on|off)/i.test((''+raw).trim()))t.ontarget=/^(yes|on)/i.test((''+raw).trim()); }
+        else if(/^(yes|no|on ?target|off ?target|hit|miss)/i.test((''+raw).trim()))
+          t.ontarget=/^(yes|on ?target|hit)/i.test((''+raw).trim());
+      }
+      else {const v=numField(raw); if(v!=null)t[c]=v;} });
+    if(t.pop!=null&&t.pop>20)t.pop=t.pop/1000;          // milliseconds export
+    if(t.exch!=null&&t.exch>10)t.exch=t.exch/1000;
+    if(num(t.pop)!=null||num(t.velo)!=null)T.push(t); else if(parts.length>1)skipped++;
+  }
+  const dates=[...new Set(T.map(t=>t.date).filter(Boolean))].sort();
+  const unmapped=heads.filter((h,j)=>h&&!cols[j]);
+  let msg;
+  if(!T.length)msg='No throws recognized — check that a column holds pop time or throw velocity.';
+  else{
+    msg=`Parsed ${T.length} throw${T.length>1?'s':''}`;
+    if(dates.length>1)msg+=` across ${dates.length} dates (${dates[0]} → ${dates[dates.length-1]})`;
+    else if(dates.length===1)msg+=` from ${dates[0]}`;
+    msg+='.'+(skipped?` ${skipped} row${skipped>1?'s':''} skipped.`:'');
+  }
+  return {throws:T,msg,dates,unmapped};
 }
 
 /* ============================== charts (inline SVG) ============================== */
@@ -632,6 +791,32 @@ function sprayChart(balls){
     <div class="legend"><span><i style="background:#2fbf71"></i>Line drive</span><span><i style="background:#f2b13c"></i>Ground ball</span>
     <span><i style="background:#3d6df0"></i>Fly ball</span><span><i style="background:#ef4d5a"></i>Pop-up</span></div>`;
 }
+// pop time per throw, with the age benchmark lines behind it
+function popChart(T){
+  const t=T.filter(x=>num(x.pop)!=null);
+  if(t.length<2)return'';
+  const W=700,H=220,P={l:44,r:12,t:14,b:26};
+  const b=popBench(DB.player.age);
+  const vals=t.map(x=>+x.pop);
+  let lo=Math.min(...vals), hi=Math.max(...vals);
+  if(b){lo=Math.min(lo,b.elite);hi=Math.max(hi,b.avg[1])}
+  const pad=(hi-lo)*0.12||0.1; lo-=pad; hi+=pad;
+  const y=v=>P.t+(H-P.t-P.b)*(1-(v-lo)/(hi-lo));
+  const bw=(W-P.l-P.r)/t.length;
+  let g='';
+  for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4;
+    g+=`<line x1="${P.l}" x2="${W-P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#27395c"/>`+
+       `<text x="${P.l-6}" y="${(y(v)+4).toFixed(1)}" fill="#6c7fa5" font-size="10.5" text-anchor="end">${v.toFixed(2)}</text>`}
+  let marks='';
+  if(b)marks=[[b.elite,'#2fbf71','elite'],[b.good,'#f2b13c','good']].map(m=>
+    y(m[0])>P.t&&y(m[0])<H-P.b?`<line x1="${P.l}" x2="${W-P.r}" y1="${y(m[0]).toFixed(1)}" y2="${y(m[0]).toFixed(1)}" stroke="${m[1]}" stroke-dasharray="5 4" opacity=".8"/>
+      <text x="${P.l+4}" y="${(y(m[0])-4).toFixed(1)}" fill="${m[1]}" font-size="10" font-weight="700">${m[2]} ${m[0].toFixed(2)}</text>`:'').join('');
+  const bars=t.map((x,i)=>{const v=+x.pop, col=b?(v<=b.elite?'#2fbf71':(v<=b.good?'#8fd36b':(v<=b.avg[1]?'#f2b13c':'#ef4d5a'))):'#FA4616';
+    const top=y(v), h=Math.max(1,(H-P.b)-top);
+    return `<rect x="${(P.l+i*bw+bw*0.15).toFixed(1)}" y="${top.toFixed(1)}" width="${(bw*0.7).toFixed(1)}" height="${h.toFixed(1)}" fill="${col}" opacity=".9" rx="2"><title>#${i+1}: ${v.toFixed(2)}s${x.velo?' · '+(+x.velo).toFixed(1)+' mph':''}</title></rect>`}).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}${bars}${marks}
+    <text x="${W/2}" y="${H-6}" fill="#6c7fa5" font-size="10" text-anchor="middle">throw order →</text></svg>`;
+}
 function mixBar(s){
   const parts=[['gb','#f2b13c','GB'],['ld','#2fbf71','LD'],['fb','#3d6df0','FB'],['pu','#ef4d5a','PU']]
     .filter(p=>s[p[0]]!=null);
@@ -645,8 +830,13 @@ function mixBar(s){
 const TABS=[['dash','Dashboard'],['log','Log Session'],['trends','Trends'],['sessions','Sessions'],['report','Report'],['data','Player & Data']];
 let TAB='dash', TRENDK='maxEV';
 function render(){
+  const showKind=countOf('catching')>0||VIEWKIND==='catching';
   document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
     `<button class="${TAB===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
+  document.getElementById('kindBar').innerHTML=showKind&&TAB!=='log'&&TAB!=='data'
+    ?`<div class="kindbar"><span>Showing</span><div class="seg">`+
+      Object.keys(KIND).map(k=>`<button class="${VIEWKIND===k?'on':''}" onclick="setKind('${k}')">${KIND[k].icon} ${KIND[k].label}</button>`).join('')+
+      `</div><span class="count">${countOf(VIEWKIND)} session${countOf(VIEWKIND)===1?'':'s'}</span></div>`:'';
   const p=DB.player;
   document.getElementById('who').innerHTML=p.name?
     `<b>${esc(p.name)}</b>${[p.age?p.age+' yrs':'',p.level].filter(Boolean).map(esc).join(' · ')}`:
@@ -655,19 +845,27 @@ function render(){
   if(TAB==='log')initLog();
 }
 function go(t){TAB=t;render();window.scrollTo(0,0)}
+function setKind(k){
+  VIEWKIND=k;
+  const avail=KIND[k].metrics.map(m=>m.k);
+  if(!avail.includes(TRENDK))TRENDK=k==='catching'?'avgPop':'maxEV';
+  if(TAB==='log')LOGKIND=k;
+  render();
+}
 
 /* ---------- dashboard ---------- */
 function vDash(){
-  const S=sorted();
+  const S=sorted(), cat=VIEWKIND==='catching';
   if(!S.length)return `<div class="card"><div class="empty">
-    <div class="big">⚾</div><h2>No sessions yet</h2>
-    <p style="color:var(--dim);max-width:460px;margin:8px auto 16px">Log a HitTrax session — type in the summary numbers
-    off the report screen, or paste the pitch-by-pitch rows and everything gets calculated for you.</p>
-    <button class="btn" onclick="go('log')">Log first session</button></div></div>`
+    <div class="big">${KIND[VIEWKIND].icon}</div><h2>No ${cat?'catching':'hitting'} sessions yet</h2>
+    <p style="color:var(--dim);max-width:460px;margin:8px auto 16px">${cat
+      ?'Upload a HitTrax catching export — pop time, exchange, arm strength and accuracy per throw — or type the session summary.'
+      :'Log a HitTrax session — type in the summary numbers off the report screen, or upload the CSV and everything gets calculated for you.'}</p>
+    <button class="btn" onclick="LOGKIND='${VIEWKIND}';go('log')">Log first session</button></div></div>`
     + refCard();
   const last=S[S.length-1], st=sessionStats(last);
-  const b=bench(DB.player.age);
-  const tiles=CORE.map(k=>{
+  const b=cat?popBench(DB.player.age):bench(DB.player.age);
+  const tiles=KIND[VIEWKIND].core.map(k=>{
     const v=num(st[k]); if(v==null)return'';
     const d=delta(k,last.id); const bs=best(k);
     const isPB=bs&&bs.id===last.id&&S.length>1;
@@ -682,16 +880,58 @@ function vDash(){
       <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${last.id}')">Details</button>
     </div>
     <div class="tiles">${tiles}</div>
-    ${st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
+    ${!cat&&st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
+    ${cat?popSplit(st):''}
   </div>
-  ${b?benchCard(st,b):''}
+  ${b?(cat?popBenchCard(st,b):benchCard(st,b)):''}
   ${coachCard(S)}
-  <div class="card"><h2>${MK['maxEV'].n} trend</h2>
+  <div class="card"><h2>${MK[cat?'avgPop':'maxEV'].n} trend</h2>
     <div class="hint">Solid = each session · dashed blue = 3-session rolling average</div>
-    ${lineChart(series('maxEV'),'maxEV')}
+    ${lineChart(series(cat?'avgPop':'maxEV'),cat?'avgPop':'maxEV')}
     <div style="margin-top:10px"><button class="btn ghost" onclick="go('trends')">All trends</button></div>
   </div>
   ${pbCard()}`;
+}
+// where the pop time actually goes: glove-to-hand exchange vs. ball flight
+function popSplit(st){
+  const pop=num(st.avgPop), ex=num(st.avgExch);
+  if(pop==null||ex==null||ex>=pop)return'';
+  const flight=pop-ex, exPct=ex/pop*100;
+  return `<div style="margin-top:14px"><label>Where the pop time goes</label>
+   <div style="display:flex;height:26px;border-radius:8px;overflow:hidden;border:1px solid var(--line)">
+     <div style="width:${exPct}%;background:#f2b13c;display:grid;place-items:center;font-size:11px;font-weight:800;color:#0b1220">${ex.toFixed(2)}s</div>
+     <div style="width:${100-exPct}%;background:#3d6df0;display:grid;place-items:center;font-size:11px;font-weight:800;color:#fff">${flight.toFixed(2)}s</div>
+   </div>
+   <div class="legend"><span><i style="background:#f2b13c"></i>Exchange ${Math.round(exPct)}%</span>
+     <span><i style="background:#3d6df0"></i>Ball flight ${Math.round(100-exPct)}% — arm strength</span></div></div>`;
+}
+function popBenchCard(st,b){
+  const v=num(st.bestPop)!=null?num(st.bestPop):num(st.avgPop); if(v==null)return'';
+  const lo=Math.min(b.elite-0.15,v-0.05), hi=Math.max(b.avg[1]+0.2,v+0.05);
+  const pct=x=>Math.max(0,Math.min(100,(x-lo)/(hi-lo)*100));
+  let tag='Developing',cls='r';
+  if(v<=b.elite){tag='Elite range';cls='g'}
+  else if(v<=b.good){tag='Above average';cls='g'}
+  else if(v<=b.avg[1]){tag='In the average band';cls='a'}
+  return `<div class="card"><div class="row" style="align-items:center">
+    <div><h2>Age benchmark <span class="chip">${b.label}</span></h2>
+    <div class="hint">Best pop time to 2B vs. typical ranges for this age — lower is better</div></div>
+    <span class="chip ${cls}" style="margin-left:auto">${tag}</span></div>
+    <div style="position:relative;height:56px;margin-top:6px">
+      <div style="position:absolute;top:18px;left:0;right:0;height:14px;border-radius:99px;background:var(--bg2);border:1px solid var(--line);overflow:hidden">
+        <div style="position:absolute;left:${pct(b.avg[0])}%;width:${pct(b.avg[1])-pct(b.avg[0])}%;top:0;bottom:0;background:rgba(242,177,60,.35)"></div>
+        <div style="position:absolute;left:${pct(b.elite)}%;width:${pct(b.good)-pct(b.elite)}%;top:0;bottom:0;background:rgba(47,191,113,.35)"></div>
+        <div style="position:absolute;left:0;width:${pct(b.elite)}%;top:0;bottom:0;background:rgba(47,191,113,.6)"></div>
+      </div>
+      <div style="position:absolute;left:${pct(v)}%;top:8px;transform:translateX(-50%);text-align:center">
+        <div style="width:3px;height:34px;background:var(--orange);margin:0 auto;border-radius:2px"></div>
+        <div style="font-size:12px;font-weight:800;color:var(--orange);margin-top:2px">${v.toFixed(2)}</div>
+      </div>
+    </div>
+    <div class="legend" style="margin-top:16px"><span><i style="background:rgba(47,191,113,.85)"></i>Elite ${b.elite.toFixed(2)} or quicker</span>
+      <span><i style="background:rgba(47,191,113,.5)"></i>Good up to ${b.good.toFixed(2)}</span>
+      <span><i style="background:rgba(242,177,60,.6)"></i>Average ${b.avg[0].toFixed(2)}–${b.avg[1].toFixed(2)}</span></div>
+  </div>`;
 }
 function benchCard(st,b){
   const v=num(st.maxEV); if(v==null)return'';
@@ -724,24 +964,40 @@ function benchCard(st,b){
 function coachCard(S){
   if(S.length<2)return `<div class="card note">Log a second session and this panel starts calling out what moved —
    and what to work on next.</div>`;
+  const cat=VIEWKIND==='catching';
   const good=[],work=[];
-  ['maxEV','avgEV','hha','sweet','ld','gb','avgLA','barrel'].forEach(k=>{
+  (cat?['bestPop','avgPop','avgExch','maxVelo','avgVelo','onTarget','outPct']
+      :['maxEV','avgEV','hha','sweet','ld','gb','avgLA','barrel']).forEach(k=>{
     const Sr=series(k); if(Sr.length<3)return;
     const half=Math.max(1,Math.floor(Sr.length/2));
     const early=Sr.slice(0,half), late=Sr.slice(-half);
     const a=early.reduce((x,c)=>x+c.v,0)/early.length, b2=late.reduce((x,c)=>x+c.v,0)/late.length;
-    const d=b2-a; if(Math.abs(d)<(MK[k].u==='%'?2:0.6))return;
+    const floor=MK[k].u==='%'?2:(MK[k].u==='s'?0.03:0.6);
+    const d=b2-a; if(Math.abs(d)<floor)return;
     const cls=dirClass(k,d);
     const txt=`<b>${MK[k].n}</b> ${d>0?'up':'down'} ${Math.abs(d).toFixed(MK[k].d)}${MK[k].u} (first half ${fmt(k,a)} → recent ${fmt(k,b2)})`;
     (cls==='up'?good:work).push(txt);
   });
   const st=sessionStats(S[S.length-1]);
   const cues=[];
+  if(cat){
+    const pop=num(st.avgPop), ex=num(st.avgExch), v=num(st.avgVelo), ot=num(st.onTarget);
+    if(pop!=null&&ex!=null&&ex>=0.95)cues.push('Exchange is the slow part ('+ex.toFixed(2)+'s). Footwork and glove-to-hand drills buy more pop time than arm work right now.');
+    if(pop!=null&&ex!=null&&ex<0.80&&v!=null)cues.push('Exchange is already quick ('+ex.toFixed(2)+'s) — the rest of the pop time is ball flight, so arm strength is the lever.');
+    if(ot!=null&&ot<60)cues.push('Under 60% of throws are on the bag. A fast throw nobody catches is not a fast throw — chase accuracy before velo.');
+    if(ot!=null&&ot>=85&&v!=null)cues.push('Accuracy is locked in — safe to push throw velocity without giving the base away.');
+    const spread=num(st.avgPop)!=null&&num(st.bestPop)!=null?num(st.avgPop)-num(st.bestPop):null;
+    if(spread!=null&&spread>0.18)cues.push('Big gap between best and average pop ('+spread.toFixed(2)+'s) — the quick one is in there, repeating it is the work.');
+    return coachBody(good,work,cues);
+  }
   if(num(st.gb)>=45)cues.push('Ground-ball rate is high — the barrel is working down through the zone. Drill: high-tee / top-half contact work.');
   if(num(st.pu)>=15)cues.push('Pop-ups are up — usually early bat-head release or too steep. Drill: line-drive-only rounds off the tee.');
   if(num(st.sweet)!=null&&num(st.sweet)<45)cues.push('Under half the batted balls are in the 8–32° window. Chase sweet-spot % before chasing max velo.');
   if(num(st.avgEV)!=null&&num(st.maxEV)!=null&&num(st.maxEV)-num(st.avgEV)>15)cues.push('Big gap between max and average EV — the power is there, consistency of contact is the gap.');
   if(num(st.ld)>=25&&num(st.hha)>=40)cues.push('Line-drive rate and hard-hit rate are both strong — this is the profile you want to repeat.');
+  return coachBody(good,work,cues);
+}
+function coachBody(good,work,cues){
   return `<div class="card"><h2>What's moving</h2><div class="hint">First half of your logged sessions vs. the most recent half</div>
    ${good.length?'<div style="margin-top:6px"><span class="chip g">Improving</span><ul class="tight">'+good.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
    ${work.length?'<div style="margin-top:12px"><span class="chip a">Watch</span><ul class="tight">'+work.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
@@ -750,7 +1006,7 @@ function coachCard(S){
   </div>`;
 }
 function pbCard(){
-  const rows=M.filter(m=>m.dir==='up'||m.dir==='down').map(m=>{
+  const rows=KIND[VIEWKIND].metrics.filter(m=>m.dir==='up'||m.dir==='down').map(m=>{
     const b=best(m.k); if(!b)return'';
     return `<tr><td>${m.n}</td><td style="font-weight:800">${fmt(m.k,b.v)} ${m.u}</td><td style="color:var(--dim)">${b.date}</td></tr>`;
   }).filter(Boolean).join('');
@@ -759,6 +1015,14 @@ function pbCard(){
    <div class="scroll"><table><thead><tr><th>Metric</th><th>Best</th><th>Set on</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 function refCard(){
+  if(VIEWKIND==='catching')return `<div class="card"><h2>What the catching module gives you</h2>
+  <div class="hint">HitTrax measures the throw to second; everything below can be tracked here, per throw or per session.</div>
+  <ul class="tight">
+   <li><b>Pop time</b> — glove impact to the ball reaching the centre of 2B, from the measured throw velocity</li>
+   <li><b>Exchange (transfer) time</b> — receiving the ball to releasing it; the half of pop time footwork actually controls</li>
+   <li><b>Arm strength</b> — peak velocity of the throw, measured just after release</li>
+   <li><b>Throw accuracy</b> — how far off the bag it finished, plus HitTrax's projected out / safe outcome and the time differential</li>
+  </ul></div>`;
   return `<div class="card"><h2>What HitTrax gives you</h2>
   <div class="hint">Everything below can be logged here — per session, and per batted ball if you have the detail rows.</div>
   <ul class="tight">
@@ -769,38 +1033,47 @@ function refCard(){
 }
 
 /* ---------- log session ---------- */
-let LOGMODE='detail', PARSED=[], PDATES=[], RAW=null;
+let LOGMODE='detail', LOGKIND='hitting', PARSED=[], PDATES=[], RAW=null, UNMAPPED=[];
 function vLog(){
   const today=new Date().toISOString().slice(0,10);
+  const cat=LOGKIND==='catching';
   return `<div class="card">
    <h2>Log a session</h2>
-   <div class="hint">Upload the HitTrax CSV (or paste the rows) for full charts, or just key in the summary numbers off the report.</div>
+   <div style="margin:10px 0 14px"><div class="seg">
+     ${Object.keys(KIND).map(k=>`<button class="${LOGKIND===k?'on':''}" onclick="setLogKind('${k}')">${KIND[k].icon} ${KIND[k].label}</button>`).join('')}
+   </div></div>
+   <div class="hint">${cat
+     ?'Upload the HitTrax catching export (or paste the throws) for per-throw detail, or key in the session summary.'
+     :'Upload the HitTrax CSV (or paste the rows) for full charts, or just key in the summary numbers off the report.'}</div>
    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
      <div><label>Date</label><input type="date" id="f_date" value="${today}"></div>
      <div><label>Session type</label><select id="f_type">
-       <option>Front toss</option><option>Machine</option><option>Live BP</option><option>Tee</option><option>Game / scrimmage</option><option>Other</option>
+       ${(cat?['Throw-downs to 2B','Throw-downs to 3B','Mixed bases','Bullpen / receiving','Game / scrimmage','Other']
+            :['Front toss','Machine','Live BP','Tee','Game / scrimmage','Other']).map(o=>'<option>'+o+'</option>').join('')}
      </select></div>
-     <div><label>Pitch speed (mph)</label><input type="number" id="f_pitch" step="1" placeholder="optional"></div>
+     <div><label>${cat?'Pitch speed in (mph)':'Pitch speed (mph)'}</label><input type="number" id="f_pitch" step="1" placeholder="optional"></div>
      <div><label>Location</label><input id="f_loc" placeholder="facility / cage"></div>
    </div>
    <div style="margin-top:14px"><div class="seg">
-     <button class="${LOGMODE==='detail'?'on':''}" onclick="setMode('detail')">Upload / paste batted balls</button>
+     <button class="${LOGMODE==='detail'?'on':''}" onclick="setMode('detail')">Upload / paste ${cat?'throws':'batted balls'}</button>
      <button class="${LOGMODE==='summary'?'on':''}" onclick="setMode('summary')">Type summary</button>
    </div></div>
    <div id="logBody" style="margin-top:14px"></div>
    <div style="margin-top:8px"><label>Notes (what you worked on)</label>
-     <textarea id="f_notes" style="min-height:70px" placeholder="e.g. new stride timing, stayed on the fastball, tired last 20 swings"></textarea></div>
+     <textarea id="f_notes" style="min-height:70px" placeholder="${cat?'e.g. worked on the replace-step, kept the glove on the inside half':'e.g. new stride timing, stayed on the fastball, tired last 20 swings'}"></textarea></div>
    <div class="row" style="margin-top:14px"><button class="btn" onclick="saveSession()">Save session</button>
      <button class="btn ghost" onclick="go('dash')">Cancel</button></div>
   </div>`;
 }
-function setMode(m){LOGMODE=m;PARSED=[];RAW=null;PDATES=[];render()}
+function setMode(m){LOGMODE=m;clearParse();render()}
+function setLogKind(k){LOGKIND=k;clearParse();render()}
+function clearParse(){PARSED=[];RAW=null;PDATES=[];UNMAPPED=[]}
 function initLog(){
-  const el=document.getElementById('logBody');
+  const el=document.getElementById('logBody'), cat=LOGKIND==='catching';
   if(LOGMODE==='detail'){
     el.innerHTML=`<div class="drop" id="dropZone">
         <div style="font-size:26px">📄</div>
-        <div><b>Upload the HitTrax CSV</b></div>
+        <div><b>Upload the HitTrax ${cat?'catching export':'CSV'}</b></div>
         <div class="hint" style="margin:4px 0 10px">Drop the file here, or pick it — .csv, .tsv or .txt. Title rows above the
           header are skipped, and a file covering several dates can become one session per date.</div>
         <button class="btn sec" onclick="document.getElementById('csvFile').click()">Choose file</button>
@@ -808,15 +1081,19 @@ function initLog(){
         <div id="fileName" class="hint" style="margin-top:8px"></div>
       </div>
       <label style="margin-top:14px">…or paste the rows</label>
-      <textarea id="f_paste" oninput="RAW=null" placeholder="Paste from HitTrax (CSV, a copied table, or one ball per line).
+      <textarea id="f_paste" oninput="RAW=null" placeholder="${cat?`Paste the throws from HitTrax.
+Column names are auto-detected — Pop Time, Exchange / Transfer, Velo / Arm Strength, Accuracy / Miss, Outcome, Base, Date.
+
+Pop	Exchange	Velo	Accuracy	Outcome
+2.18	0.84	62.1	9	Out
+2.31	0.95	60.4	31	Safe`:`Paste from HitTrax (CSV, a copied table, or one ball per line).
 Column names are auto-detected — Velo / Exit Velocity / EV, LA / Launch Angle, Dist / Distance, Spray / Horiz Angle, Result / Play.
 
 Velo	LA	Dist	Result
 78.4	14	205	Single
 81.2	22	241	Double
-69.0	-8	62	Out
 
-No header? One line per ball works too:  78.4 14 205"></textarea>
+No header? One line per ball works too:  78.4 14 205`}"></textarea>
       <div class="row" style="margin-top:8px;align-items:center">
         <button class="btn sec" onclick="doParse()">Parse</button>
         <span id="parseMsg" style="font-size:13px;color:var(--dim)"></span></div>
@@ -825,7 +1102,7 @@ No header? One line per ball works too:  78.4 14 205"></textarea>
   }else{
     el.innerHTML=`<div class="hint" style="margin-bottom:8px">Fill in whatever your report shows — blanks are fine.</div>
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">`+
-      M.filter(m=>m.k!=='topEV'&&m.k!=='barrel').map(m=>
+      KIND[LOGKIND].metrics.filter(m=>!['topEV','barrel','top25Pop','avgMiss'].includes(m.k)).map(m=>
       `<div><label>${m.n}${m.u?' ('+m.u+')':''}</label><input type="number" step="any" id="s_${m.k}"></div>`).join('')+
       `</div>`;
   }
@@ -855,8 +1132,11 @@ function readCsv(file){
 }
 function doParse(){
   const ta=document.getElementById('f_paste');
-  const r=parsePaste(RAW!=null?RAW:(ta?ta.value:''));
-  PARSED=r.balls; PDATES=r.dates;
+  const txt=RAW!=null?RAW:(ta?ta.value:'');
+  if(LOGKIND==='catching')return doParseThrows(txt);
+  const r=parsePaste(txt);
+  PARSED=r.balls; PDATES=r.dates; UNMAPPED=[];
+  prefillPlayer(r.balls);
   document.getElementById('parseMsg').textContent=r.msg;
   const pv=document.getElementById('preview');
   if(!PARSED.length){pv.innerHTML='';return}
@@ -886,53 +1166,100 @@ function groupByDate(){
   const g={}; PARSED.forEach(b=>{const d=b.date||'(no date)'; (g[d]=g[d]||[]).push(b)});
   return Object.keys(g).sort().map(d=>({date:d,balls:g[d]}));
 }
+// the export names the player and level — fill a blank profile rather than make them retype it
+function prefillPlayer(rows){
+  const r=rows.find(x=>x.user)||{};
+  if(r.user&&!DB.player.name){DB.player.name=(''+r.user).trim(); save()}
+  const lv=(rows.find(x=>x.level)||{}).level;
+  if(lv&&!DB.player.level){DB.player.level=(''+lv).trim(); save()}
+  // "Baseball - 12U" -> age 12 (top of the bracket; editable on the Player tab)
+  if(lv&&!DB.player.age){const m=(''+lv).match(/(\d{1,2})\s*U/i); if(m){DB.player.age=String(+m[1]); save()}}
+}
+function doParseThrows(txt){
+  const r=parseThrows(txt);
+  PARSED=r.throws; PDATES=r.dates; UNMAPPED=r.unmapped||[];
+  prefillPlayer(r.throws);
+  document.getElementById('parseMsg').textContent=r.msg;
+  const pv=document.getElementById('preview');
+  if(!PARSED.length){pv.innerHTML=UNMAPPED.length?`<div class="note warn" style="margin-top:10px">Columns I didn't recognise:
+     <span class="mono">${UNMAPPED.map(esc).join(', ')}</span>. Send me that header row and I'll teach the app its names.</div>`:'';
+    return}
+  if(PDATES.length){const d=document.getElementById('f_date'); if(d)d.value=PDATES[0]}
+  const st=computeFromThrows(PARSED), multi=PDATES.length>1;
+  pv.innerHTML=`<div class="card" style="background:var(--card2)"><h2>Preview</h2>
+   <div class="hint">On target = inside ${ON_TARGET_IN} in of the bag${multi?' · all dates combined':''}</div>
+   <div class="tiles">`+['throws','bestPop','avgPop','avgExch','maxVelo','avgVelo','onTarget','outPct'].map(k=>
+     st[k]==null?'':`<div class="tile" style="background:var(--bg2)"><div class="k">${MK[k].n}</div>
+       <div class="v" style="font-size:21px">${fmt(k,st[k])}<small>${MK[k].u}</small></div></div>`).join('')+
+   `</div>${popSplit(st)}
+   ${UNMAPPED.length?`<div class="note warn" style="margin-top:12px">Ignored columns: <span class="mono">${UNMAPPED.map(esc).join(', ')}</span></div>`:''}
+   ${multi?`<div class="note" style="margin-top:14px">
+      <label style="display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:13.5px;color:inherit;font-weight:600">
+        <input type="checkbox" id="f_split" checked style="width:auto" onchange="renderSplit()">
+        Save as ${PDATES.length} separate sessions, one per date</label>
+      <div id="splitList" style="margin-top:10px"></div></div>`:''}
+   </div>`;
+  if(multi)renderSplit();
+}
 function renderSplit(){
   const el=document.getElementById('splitList'); if(!el)return;
-  const on=document.getElementById('f_split').checked;
-  if(!on){el.innerHTML=`<span class="hint">One session dated by the date field above, with all ${PARSED.length} batted balls.</span>`;return}
-  el.innerHTML=`<div class="scroll"><table><thead><tr><th>Date</th><th>BIP</th><th>Max EV</th><th>Avg EV</th></tr></thead><tbody>`+
-    groupByDate().map(g=>{const s=computeFromBalls(g.balls,HH());
+  const on=document.getElementById('f_split').checked, cat=LOGKIND==='catching';
+  if(!on){el.innerHTML=`<span class="hint">One session dated by the date field above, with all ${PARSED.length} ${cat?'throws':'batted balls'}.</span>`;return}
+  const head=cat?['Date','Throws','Best pop','Avg pop']:['Date','BIP','Max EV','Avg EV'];
+  el.innerHTML=`<div class="scroll"><table><thead><tr>${head.map(h=>'<th>'+h+'</th>').join('')}</tr></thead><tbody>`+
+    groupByDate().map(g=>{
+      if(cat){const s=computeFromThrows(g.balls);
+        return `<tr><td>${g.date}</td><td>${s.throws}</td><td>${fmt('bestPop',s.bestPop)}</td><td>${fmt('avgPop',s.avgPop)}</td></tr>`}
+      const s=computeFromBalls(g.balls,HH());
       return `<tr><td>${g.date}</td><td>${s.swings}</td><td>${fmt('maxEV',s.maxEV)}</td><td>${fmt('avgEV',s.avgEV)}</td></tr>`}).join('')+
     `</tbody></table></div>`;
 }
 function saveSession(){
   const g=id=>document.getElementById(id);
-  const s={id:uid(),date:g('f_date').value,type:g('f_type').value,pitch:num(g('f_pitch').value),
+  const cat=LOGKIND==='catching';
+  const s={id:uid(),kind:LOGKIND,date:g('f_date').value,type:g('f_type').value,pitch:num(g('f_pitch').value),
     location:g('f_loc').value.trim(),notes:g('f_notes').value.trim(),mode:LOGMODE};
   if(!s.date){alert('Pick a date.');return}
+  const pack=(rows)=>cat?{throws:rows,summary:computeFromThrows(rows)}
+                        :{balls:rows,summary:computeFromBalls(rows,HH()),pitch:avgPitch(rows)};
   if(LOGMODE==='detail'){
     if(!PARSED.length)doParse();
     if(!PARSED.length){alert('Nothing parsed yet — upload a CSV or paste rows, then hit Parse.');return}
     const splitBox=document.getElementById('f_split');
     if(splitBox&&splitBox.checked){        // one session per date in the file
       const groups=groupByDate(), now=Date.now();
-      groups.forEach((gr,i)=>DB.sessions.push({...s,id:uid(),mtime:now+i,pitch:s.pitch!=null?s.pitch:avgPitch(gr.balls),
-        date:gr.date==='(no date)'?s.date:gr.date, balls:gr.balls, summary:computeFromBalls(gr.balls,HH())}));
-      save(); PARSED=[];PDATES=[];RAW=null;
+      groups.forEach((gr,i)=>{const d=pack(gr.balls);
+        DB.sessions.push({...s,...d,id:uid(),mtime:now+i,
+          pitch:s.pitch!=null?s.pitch:(d.pitch!=null?d.pitch:null),
+          date:gr.date==='(no date)'?s.date:gr.date})});
+      save(); clearParse(); VIEWKIND=LOGKIND;
       alert(`Saved ${groups.length} sessions.`); go('sessions'); return;
     }
-    s.balls=PARSED; s.summary=computeFromBalls(PARSED,HH());
-    if(s.pitch==null)s.pitch=avgPitch(PARSED);     // the file usually carries pitch speed per ball
+    const d=pack(PARSED);
+    Object.assign(s,d);
+    if(num(g('f_pitch').value)!=null)s.pitch=num(g('f_pitch').value);   // typed value wins
   }else{
     const sum={}; let any=false;
-    M.forEach(m=>{const e=document.getElementById('s_'+m.k); if(!e)return;
+    KIND[LOGKIND].metrics.forEach(m=>{const e=document.getElementById('s_'+m.k); if(!e)return;
       const v=num(e.value); if(v!=null){sum[m.k]=v;any=true}});
     if(!any){alert('Enter at least one number.');return}
-    if(sum.hha!=null&&sum.hha<=1)sum.hha*=100;   // accept .450 or 45
+    ['hha','onTarget','outPct'].forEach(k=>{if(sum[k]!=null&&sum[k]<=1)sum[k]*=100});   // accept .450 or 45
     s.summary=sum;
   }
   s.mtime=Date.now();
-  DB.sessions.push(s); save(); PARSED=[];PDATES=[];RAW=null; go('dash');
+  DB.sessions.push(s); save(); clearParse(); VIEWKIND=LOGKIND; go('dash');
 }
 
 /* ---------- trends ---------- */
 function vTrends(){
   const S=series(TRENDK);
-  const avail=M.filter(m=>series(m.k).length>0);
+  const avail=KIND[VIEWKIND].metrics.filter(m=>series(m.k).length>0);
   if(!avail.length)return '<div class="card"><div class="empty">Log a session first.</div></div>';
   if(!avail.find(m=>m.k===TRENDK))TRENDK=avail[0].k;
-  const b=bench(DB.player.age);
-  const band=(TRENDK==='maxEV'&&b)?[b.good[0],b.good[1]]:(MK[TRENDK].dir==='win'?MK[TRENDK].win:null);
+  const b=bench(DB.player.age), pb=popBench(DB.player.age);
+  let band=MK[TRENDK].dir==='win'?MK[TRENDK].win:null;
+  if(TRENDK==='maxEV'&&b)band=[b.good[0],b.good[1]];
+  if((TRENDK==='avgPop'||TRENDK==='bestPop')&&pb)band=[pb.elite,pb.good];
   const first=S[0],lastp=S[S.length-1];
   const chg=S.length>1?lastp.v-first.v:null;
   return `<div class="card">
@@ -960,28 +1287,39 @@ function vTrends(){
 function vSessions(){
   const S=sorted().reverse();
   if(!S.length)return '<div class="card"><div class="empty">No sessions logged.</div></div>';
-  return `<div class="card"><h2>All sessions</h2><div class="hint">${S.length} logged · tap a row for the full breakdown</div>
-  <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>BIP</th><th>Max EV</th><th>Avg EV</th><th>HHA</th><th>LD%</th><th>Avg LA</th><th></th></tr></thead><tbody>`+
+  const cat=VIEWKIND==='catching';
+  const cols=cat?[['throws','Throws'],['bestPop','Best pop'],['avgPop','Avg pop'],['avgExch','Exchange'],['maxVelo','Max arm'],['onTarget','On target']]
+                :[['swings','BIP'],['maxEV','Max EV'],['avgEV','Avg EV'],['hha','HHA'],['ld','LD%'],['avgLA','Avg LA']];
+  return `<div class="card"><h2>All ${cat?'catching':'hitting'} sessions</h2>
+  <div class="hint">${S.length} logged · tap a row for the full breakdown</div>
+  <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
   S.map(s=>{const st=sessionStats(s);
-   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>
-    <td>${st.swings!=null?Math.round(st.swings):'—'}</td><td style="font-weight:700">${fmt('maxEV',num(st.maxEV))}</td>
-    <td>${fmt('avgEV',num(st.avgEV))}</td><td>${st.hha!=null?Math.round(st.hha)+'%':'—'}</td>
-    <td>${st.ld!=null?Math.round(st.ld)+'%':'—'}</td><td>${fmt('avgLA',num(st.avgLA))}</td>
-    <td>${s.mode==='detail'?'<span class="chip">detail</span>':''}</td></tr>`}).join('')+
+   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>`+
+    cols.map((c,i)=>{const v=num(st[c[0]]);
+      return `<td${i===1?' style="font-weight:700"':''}>${v==null?'—':(MK[c[0]].u==='%'?Math.round(v)+'%':fmt(c[0],v))}</td>`}).join('')+
+    `<td>${s.mode==='detail'?'<span class="chip">detail</span>':''}</td></tr>`}).join('')+
   `</tbody></table></div></div>`;
 }
 function openSession(id){
   const s=DB.sessions.find(x=>x.id===id); if(!s)return;
   const st=sessionStats(s);
   document.getElementById('dlgTitle').textContent=s.date+(s.type?' · '+s.type:'');
-  const tiles=M.filter(m=>num(st[m.k])!=null).map(m=>{const d=delta(m.k,id);
+  const tiles=KIND[kindOf(s)].metrics.filter(m=>num(st[m.k])!=null).map(m=>{const d=delta(m.k,id);
     return `<div class="tile"><div class="k">${m.n}</div><div class="v" style="font-size:20px">${fmt(m.k,num(st[m.k]))}<small>${m.u}</small></div>
     ${d!=null?`<div class="d ${dirClass(m.k,d)}">${dstr(m.k,d)}</div>`:''}</div>`}).join('');
-  const balls=s.balls||[];
+  const balls=s.balls||[], thr=s.throws||[];
   document.getElementById('dlgBody').innerHTML=`
    ${s.location||s.pitch?`<div class="hint">${[s.location,s.pitch?s.pitch+' mph pitch':''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
    <div class="tiles">${tiles}</div>
    ${st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
+   ${thr.length?popSplit(st):''}
+   ${thr.length?`<div style="margin-top:18px"><label>Pop time by throw</label>${popChart(thr)}</div>`:''}
+   ${thr.length?`<div style="margin-top:18px"><label>Throws (${thr.length})</label><div class="scroll" style="max-height:260px">
+     <table class="mono"><thead><tr><th>#</th><th>Pop</th><th>Exch</th><th>Velo</th><th>Miss</th><th>Base</th><th>Call</th></tr></thead><tbody>`+
+     thr.map((x,i)=>`<tr><td>${i+1}</td><td>${x.pop!=null?(+x.pop).toFixed(2):'—'}</td><td>${x.exch!=null?(+x.exch).toFixed(2):'—'}</td>
+       <td>${x.velo!=null?(+x.velo).toFixed(1):'—'}</td><td>${x.miss!=null?Math.round(x.miss)+'"':(x.ontarget===true?'on':(x.ontarget===false?'off':'—'))}</td>
+       <td>${esc(x.base||'—')}</td><td>${x.outcome?(x.outcome==='out'?'<span class="chip g">out</span>':'<span class="chip r">safe</span>'):'—'}</td></tr>`).join('')+
+     `</tbody></table></div></div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
    ${balls.length&&balls.some(b=>b.horiz!=null)?`<div style="margin-top:18px"><label>Spray chart</label>${sprayChart(balls)}</div>`:''}
    ${s.notes?`<div style="margin-top:16px"><label>Notes</label><div style="background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px">${esc(s.notes)}</div></div>`:''}
@@ -1004,9 +1342,9 @@ function delSession(id){
 function vReport(){
   const S=sorted();
   if(S.length<2)return '<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
-  const from=S[0].date,to=S[S.length-1].date;
-  const b=bench(DB.player.age);
-  const rows=M.map(m=>{const s2=series(m.k); if(s2.length<2)return'';
+  const from=S[0].date,to=S[S.length-1].date, cat=VIEWKIND==='catching';
+  const b=cat?popBench(DB.player.age):bench(DB.player.age);
+  const rows=KIND[VIEWKIND].metrics.map(m=>{const s2=series(m.k); if(s2.length<2)return'';
     const f=s2[0].v,l=s2[s2.length-1].v,d=l-f,bs=best(m.k);
     const pct=f?((d/Math.abs(f))*100):null;
     return `<tr><td>${m.n}</td><td>${fmt(m.k,f)}</td><td style="font-weight:700">${fmt(m.k,l)}</td>
@@ -1015,24 +1353,29 @@ function vReport(){
   return `<div class="card">
     <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
       <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
-    <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — HitTrax progress report</h2>
+    <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — HitTrax ${cat?'catching':'hitting'} progress report</h2>
     <div class="hint">${from} → ${to} · ${S.length} sessions${DB.player.age?' · age '+esc(DB.player.age):''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
     <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Metric</th><th>First</th><th>Latest</th><th>Change</th><th>Best</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-    ${b?`<div class="note" style="margin-top:14px">Age-group reference (${b.label}): average ${b.avg[0]}–${b.avg[1]} mph · good ${b.good[0]}–${b.good[1]} mph · elite ${b.elite}+ mph max exit velo.</div>`:''}
+    ${b?`<div class="note" style="margin-top:14px">Age-group reference (${b.label}): ${cat
+      ?`pop time average ${b.avg[0].toFixed(2)}–${b.avg[1].toFixed(2)}s · good ${b.good.toFixed(2)}s · elite ${b.elite.toFixed(2)}s or quicker.`
+      :`average ${b.avg[0]}–${b.avg[1]} mph · good ${b.good[0]}–${b.good[1]} mph · elite ${b.elite}+ mph max exit velo.`}</div>`:''}
    </div>
-   <div class="card"><h2>Max exit velo</h2>${lineChart(series('maxEV'),'maxEV',b?{band:[b.good[0],b.good[1]]}:{})}</div>
-   <div class="card"><h2>Hard-hit average</h2>${lineChart(series('hha'),'hha')}</div>
-   <div class="card"><h2>Session log</h2><div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>BIP</th><th>Max EV</th><th>Avg EV</th><th>Notes</th></tr></thead><tbody>`+
-   S.slice().reverse().map(s=>{const st=sessionStats(s);
-     return `<tr><td>${s.date}</td><td>${esc(s.type||'')}</td><td>${st.swings!=null?Math.round(st.swings):'—'}</td>
-      <td>${fmt('maxEV',num(st.maxEV))}</td><td>${fmt('avgEV',num(st.avgEV))}</td>
+   ${cat?`<div class="card"><h2>Average pop time</h2>${lineChart(series('avgPop'),'avgPop',b?{band:[b.elite,b.good]}:{})}</div>
+     <div class="card"><h2>Arm strength</h2>${lineChart(series('maxVelo'),'maxVelo')}</div>`
+   :`<div class="card"><h2>Max exit velo</h2>${lineChart(series('maxEV'),'maxEV',b?{band:[b.good[0],b.good[1]]}:{})}</div>
+     <div class="card"><h2>Hard-hit average</h2>${lineChart(series('hha'),'hha')}</div>`}
+   <div class="card"><h2>Session log</h2><div class="scroll"><table><thead><tr><th>Date</th><th>Type</th>
+     <th>${cat?'Throws':'BIP'}</th><th>${cat?'Best pop':'Max EV'}</th><th>${cat?'Avg pop':'Avg EV'}</th><th>Notes</th></tr></thead><tbody>`+
+   S.slice().reverse().map(s=>{const st=sessionStats(s); const ks=cat?['throws','bestPop','avgPop']:['swings','maxEV','avgEV'];
+     return `<tr><td>${s.date}</td><td>${esc(s.type||'')}</td><td>${num(st[ks[0]])!=null?Math.round(st[ks[0]]):'—'}</td>
+      <td>${fmt(ks[1],num(st[ks[1]]))}</td><td>${fmt(ks[2],num(st[ks[2]]))}</td>
       <td style="white-space:normal;color:var(--dim);max-width:280px">${esc(s.notes||'')}</td></tr>`}).join('')+
    `</tbody></table></div></div>`;
 }
 function copyReport(){
   const S=sorted(); let t=`${DB.player.name||'Player'} — HitTrax progress\n${S[0].date} → ${S[S.length-1].date} · ${S.length} sessions\n\n`;
-  M.forEach(m=>{const s2=series(m.k); if(s2.length<2)return;
+  KIND[VIEWKIND].metrics.forEach(m=>{const s2=series(m.k); if(s2.length<2)return;
     const f=s2[0].v,l=s2[s2.length-1].v;
     t+=`${m.n}: ${fmt(m.k,f)} → ${fmt(m.k,l)} (${dstr(m.k,l-f)}${m.u})\n`});
   navigator.clipboard.writeText(t).then(()=>alert('Report copied.'),()=>alert('Copy failed.'));
@@ -1073,6 +1416,9 @@ function vData(){
     <li><b>Hard-hit average:</b> share of batted balls at or above ${HH()} mph exit velo</li>
     <li><b>Barrel %:</b> at or above ${HH()} mph <i>and</i> between 8° and 32° — the damage zone</li>
     <li><b>Top-25% avg EV:</b> average of the hardest quarter of the round — steadier than a single max, better than the overall average for tracking real power gains</li>
+    <li><b>Catching — pop time:</b> glove impact to the ball reaching 2B; <b>exchange</b> is the receive-to-release part of it, <b>arm strength</b> is peak throw velocity</li>
+    <li><b>Catching — on-target %:</b> throws finishing within ${ON_TARGET_IN} in of the bag (or the file's own on/off-target flag); <b>projected outs %</b> uses HitTrax's out/safe call</li>
+    <li><b>Top-25% avg pop:</b> average of the quickest quarter of the round — what he can repeat, not a one-off</li>
    </ul>
    <div class="note warn" style="margin-top:12px">Compare like with like: tee, front toss, machine and live BP produce different exit velos.
    Filter your read by session type when you judge progress.</div></div>`;
@@ -1089,13 +1435,13 @@ function dl(name,text,type){
 }
 function expJSON(){dl(`hittrax-backup-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(DB,null,2),'application/json')}
 function expCSV(){
-  const ks=M.map(m=>m.k);
+  const ks=KIND[VIEWKIND].metrics.map(m=>m.k);
   let csv='date,type,location,pitch_speed,'+ks.join(',')+',notes\n';
   sorted().forEach(s=>{const st=sessionStats(s);
     csv+=[s.date,s.type||'',s.location||'',s.pitch||''].map(v=>`"${(''+v).replace(/"/g,'""')}"`).join(',')+','+
       ks.map(k=>num(st[k])!=null?(+st[k]).toFixed(MK[k].d):'').join(',')+
       `,"${(s.notes||'').replace(/"/g,'""')}"\n`});
-  dl(`hittrax-sessions-${new Date().toISOString().slice(0,10)}.csv`,csv,'text/csv');
+  dl(`hittrax-${VIEWKIND}-${new Date().toISOString().slice(0,10)}.csv`,csv,'text/csv');
 }
 function impJSON(inp){
   const f=inp.files[0]; if(!f)return; const r=new FileReader();
@@ -1118,6 +1464,9 @@ function wipe(){
 /* ============================== boot ============================== */
 readSession();
 DB=load();
+// open on whichever discipline was logged most recently
+(function(){const last=DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:1).pop();
+  if(last)VIEWKIND=kindOf(last); if(VIEWKIND==='catching')TRENDK='avgPop'; LOGKIND=VIEWKIND;})();
 render();
 setSync(session?'saving':'local');
 startSync();
