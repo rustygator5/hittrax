@@ -97,6 +97,10 @@ tr.clickable:hover td{background:var(--card2)}
 ul.tight{margin:8px 0 0;padding-left:18px;font-size:13.5px}
 ul.tight li{margin:5px 0}
 svg{display:block;max-width:100%}
+select.inline{background:transparent;border:1px solid transparent;color:var(--dim);padding:3px 4px;
+  font-size:13.5px;border-radius:7px;width:auto;max-width:170px;cursor:pointer}
+select.inline:hover{border-color:var(--line);background:var(--bg2);color:var(--txt)}
+select.inline.sm{font-size:12.5px}
 .auto{background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;font-size:15px;
   color:var(--dim);min-height:39px;display:flex;align-items:center;gap:7px}
 .auto b{color:var(--txt);font-size:17px;font-weight:800}
@@ -430,6 +434,8 @@ const CORE=['maxEV','avgEV','hha','sweet','ld','avgLA'];
 const CCORE=['bestPop','avgPop','avgExch','maxVelo','cleanPct','outPct'];
 const KIND={hitting:{label:'Hitting',icon:'⚾',metrics:M,core:CORE,unit:'balls in play'},
             catching:{label:'Catching',icon:'🧤',metrics:CM,core:CCORE,unit:'throws'}};
+const STYPES={hitting:['Front toss','Machine','Live BP','Tee','Game / scrimmage','Other'],
+  catching:['Throw-downs to 2B','Throw-downs to 3B','Mixed bases','Bullpen / receiving','Game / scrimmage','Other']};
 const kindOf=s=>s.kind||'hitting';
 let VIEWKIND='hitting';
 
@@ -1201,8 +1207,7 @@ function vLog(){
    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
      <div><label>Date</label><input type="date" id="f_date" value="${today}"></div>
      <div><label>Session type</label><select id="f_type">
-       ${(cat?['Throw-downs to 2B','Throw-downs to 3B','Mixed bases','Bullpen / receiving','Game / scrimmage','Other']
-            :['Front toss','Machine','Live BP','Tee','Game / scrimmage','Other']).map(o=>'<option>'+o+'</option>').join('')}
+       ${STYPES[LOGKIND].map(o=>'<option>'+o+'</option>').join('')}
      </select></div>
      <div><label>${cat?'Pitch speed in (mph)':'Pitch speed (mph)'}</label>
        ${LOGMODE==='detail'
@@ -1459,17 +1464,37 @@ function vSessions(){
                 :[['swings','BIP'],['maxEV','Max EV'],['avgEV','Avg EV'],['hha','HHA'],['ld','LD%'],['avgLA','Avg LA']];
   return `<div class="card"><h2>All ${cat?'catching':'hitting'} sessions</h2>
   <div class="hint">${S.length} logged · tap a row for the full breakdown</div>
-  <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
+  <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
   S.map(s=>{const st=sessionStats(s);
-   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>`+
+   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td>
+    <td>${typeSelect(s)}</td>
+    <td>${s.pitch!=null?Math.round(s.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>`+
     cols.map((c,i)=>{const v=num(st[c[0]]);
       return `<td${i===1?' style="font-weight:700"':''}>${v==null?'—':(MK[c[0]].u==='%'?Math.round(v)+'%':fmt(c[0],v))}</td>`}).join('')+
     `<td>${(s.parts&&s.parts.length>1)?`<span class="chip">${s.parts.length} rounds</span>`
       :(s.mode==='detail'?'<span class="chip">detail</span>':'')}</td></tr>`}).join('')+
   `</tbody></table></div></div>`;
 }
+// Session type is editable after the fact — HitTrax doesn't record it, so it's guesswork at
+// upload time. Editing a grouped day retypes every round in it.
+function typeSelect(s,small){
+  const list=STYPES[kindOf(s)].slice();
+  if(s.type&&!list.includes(s.type))list.unshift(s.type);     // e.g. a merged "Front toss + Tee"
+  return `<select class="inline${small?' sm':''}" onclick="event.stopPropagation()"
+    onchange="event.stopPropagation();setType('${s.id}',this.value)">
+    ${!s.type?'<option value="" selected>—</option>':''}
+    ${list.map(o=>`<option${o===s.type?' selected':''}>${esc(o)}</option>`).join('')}</select>`;
+}
+function setType(id,val){
+  const s=findSession(id); if(!s)return;
+  (s.parts||[s]).forEach(pt=>{const raw=DB.sessions.find(x=>x.id===pt.id); if(raw){raw.type=val;raw.mtime=Date.now()}});
+  save(); render();
+  if(dlg.open&&OPENID)openSession(OPENID);   // keep an open breakdown in step
+}
+let OPENID=null;                     // which breakdown is on screen, so edits can refresh it
 function openSession(id){
   const s=findSession(id); if(!s)return;
+  OPENID=id;
   const st=sessionStats(s);
   document.getElementById('dlgTitle').textContent=s.date+(s.type?' · '+s.type:'');
   const tiles=KIND[kindOf(s)].metrics.filter(m=>num(st[m.k])!=null).map(m=>{const d=delta(m.k,id);
@@ -1503,15 +1528,16 @@ function openSession(id){
    ${(s.parts&&s.parts.length>1)?`<div style="margin-top:18px"><label>${s.parts.length} rounds uploaded on this date</label>
      <div class="scroll"><table><thead><tr><th>Round</th><th>${kindOf(s)==='catching'?'Throws':'Balls'}</th><th>Type</th><th></th></tr></thead><tbody>`+
      s.parts.map((pt,i)=>{const n=((kindOf(s)==='catching'?pt.throws:pt.balls)||[]).length;
-       return `<tr><td>#${i+1}</td><td>${n||'—'}</td><td style="color:var(--dim)">${esc(pt.type||'')}</td>
+       return `<tr><td>#${i+1}</td><td>${n||'—'}</td><td>${typeSelect(pt,true)}</td>
          <td><button class="btn ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:rgba(239,77,90,.4)"
            onclick="delSession('${pt.id}')">Delete</button></td></tr>`}).join('')+
      `</tbody></table></div></div>`
    :`<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')" style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`}`;
-  dlg.showModal();
+  if(!dlg.open)dlg.showModal();   // re-rendering an open breakdown must not re-show it
 }
 function delSession(id){
   if(!confirm('Delete this round? This cannot be undone.'))return;
+  OPENID=null;
   DB.sessions=DB.sessions.filter(s=>s.id!==id);
   DB.deleted.push({id,ts:Date.now()});      // tombstone, so the delete syncs instead of the row coming back
   save(); dlg.close(); render();
