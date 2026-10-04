@@ -22,6 +22,16 @@ everywhere - dashboard, trends, personal bests, report - so a day counts once in
 up as several half-rounds. The rounds are kept underneath: open the session and each upload is
 listed with its own ball/throw count and its own delete button.
 
+Open a day and each round is listed with its own **avg pitch speed and avg exit velo** (avg pop
+for catching) - the quickest way to spot that round 2 was a different pitcher or machine setting.
+Each round then has a **Counts as** dropdown:
+
+- **Grouped** (default) - merged into the day's numbers
+- **Separate** - stays its own session on that date, so a 35 mph machine round and a 21 mph toss
+  round never average together; it shows up as its own row marked SEPARATE ROUND
+- **Excluded** - kept but left out of every total, trend and personal best; excluded rounds get
+  their own card at the bottom of the Sessions tab, with the same dropdown to bring them back
+
 When every round of the day has raw rows, the day's numbers are recomputed from the pooled rows,
 so they are exact. If one round was typed in as a summary instead, counts are summed, bests take
 the best, and averages are weighted by round size.

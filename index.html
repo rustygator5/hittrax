@@ -543,10 +543,35 @@ const rawSorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
 /* One day = one session. HitTrax writes a file per round, so a single trip to the cage can
    arrive as several uploads; everything downstream works on day-sessions, with the individual
    uploads kept underneath so they can still be inspected and deleted. */
+const GROUPS={in:'Grouped',solo:'Separate',out:'Excluded'};
+const dispo=s=>s.group||'in';
 function daySessions(kind){
-  const by={};
+  kind=kind||VIEWKIND;
+  const by={}, out=[];
   rawSorted(kind).forEach(s=>{(by[s.date]=by[s.date]||[]).push(s)});
-  return Object.keys(by).sort().map(d=>dayOf(by[d],kind||VIEWKIND));
+  Object.keys(by).sort().forEach(d=>{
+    const parts=by[d];
+    const grouped=parts.filter(s=>dispo(s)==='in');
+    if(grouped.length)out.push(dayOf(grouped,kind));
+    parts.filter(s=>dispo(s)==='solo').forEach(s=>out.push(Object.assign({},s,{parts:[s],solo:true})));
+  });
+  return out.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+}
+const excludedOf=kind=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND)&&dispo(s)==='out')
+  .sort((a,b)=>a.date<b.date?1:-1);
+// every round logged on that date, whatever its disposition — the breakdown edits them all
+const roundsOfDate=s=>DB.sessions.filter(x=>kindOf(x)===kindOf(s)&&x.date===s.date)
+  .sort((a,b)=>(a.mtime||0)-(b.mtime||0));
+function setGroup(id,val){
+  const raw=DB.sessions.find(x=>x.id===id); if(!raw)return;
+  raw.group=val; raw.mtime=Date.now(); save(); render();
+  if(!dlg.open)return;
+  // the day this round belonged to may have just split, merged or emptied — follow it
+  const list=sorted(kindOf(raw));
+  const target=(val==='solo'&&list.find(e=>e.id===raw.id))
+    || list.find(e=>e.date===raw.date&&(e.parts||[]).some(x=>x.id===raw.id))
+    || list.find(e=>e.date===raw.date);
+  target?openSession(target.id):dlg.close();
 }
 function dayOf(parts,kind){
   const p0=parts[0];
@@ -1458,7 +1483,7 @@ function vTrends(){
 /* ---------- sessions ---------- */
 function vSessions(){
   const S=sorted().reverse();
-  if(!S.length)return '<div class="card"><div class="empty">No sessions logged.</div></div>';
+  if(!S.length)return '<div class="card"><div class="empty">No sessions logged.</div></div>'+excludedCard();
   const cat=VIEWKIND==='catching';
   const cols=cat?[['throws','Throws'],['bestPop','Best pop'],['avgPop','Avg pop'],['avgExch','Exchange'],['maxVelo','Max arm'],['onTarget','On target']]
                 :[['swings','BIP'],['maxEV','Max EV'],['avgEV','Avg EV'],['hha','HHA'],['ld','LD%'],['avgLA','Avg LA']];
@@ -1466,14 +1491,15 @@ function vSessions(){
   <div class="hint">${S.length} logged · tap a row for the full breakdown</div>
   <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
   S.map(s=>{const st=sessionStats(s);
-   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td>
+   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}${s.solo
+      ?'<div style="font-size:10.5px;color:var(--amber);font-weight:700;letter-spacing:.04em">SEPARATE ROUND</div>':''}</td>
     <td>${typeSelect(s)}</td>
     <td>${s.pitch!=null?Math.round(s.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>`+
     cols.map((c,i)=>{const v=num(st[c[0]]);
       return `<td${i===1?' style="font-weight:700"':''}>${v==null?'—':(MK[c[0]].u==='%'?Math.round(v)+'%':fmt(c[0],v))}</td>`}).join('')+
     `<td>${(s.parts&&s.parts.length>1)?`<span class="chip">${s.parts.length} rounds</span>`
       :(s.mode==='detail'?'<span class="chip">detail</span>':'')}</td></tr>`}).join('')+
-  `</tbody></table></div></div>`;
+  `</tbody></table></div></div>`+excludedCard();
 }
 // Session type is editable after the fact — HitTrax doesn't record it, so it's guesswork at
 // upload time. Editing a grouped day retypes every round in it.
@@ -1490,6 +1516,21 @@ function setType(id,val){
   (s.parts||[s]).forEach(pt=>{const raw=DB.sessions.find(x=>x.id===pt.id); if(raw){raw.type=val;raw.mtime=Date.now()}});
   save(); render();
   if(dlg.open&&OPENID)openSession(OPENID);   // keep an open breakdown in step
+}
+function excludedCard(){
+  const ex=excludedOf(VIEWKIND); if(!ex.length)return'';
+  const cat=VIEWKIND==='catching';
+  return `<div class="card"><h2>Excluded rounds</h2>
+   <div class="hint">Kept, but left out of every total, trend and personal best</div>
+   <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>
+     <th>${cat?'Avg pop':'Avg EV'}</th><th>Counts as</th></tr></thead><tbody>`+
+   ex.map(s=>{const st=sessionStats(s), k=cat?'avgPop':'avgEV';
+     return `<tr><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>
+      <td>${s.pitch!=null?Math.round(s.pitch)+' mph':'—'}</td><td>${fmt(k,num(st[k]))}</td>
+      <td><select class="inline sm" onchange="setGroup('${s.id}',this.value)">
+        ${Object.keys(GROUPS).map(g=>`<option value="${g}"${g==='out'?' selected':''}>${GROUPS[g]}</option>`).join('')}
+      </select></td></tr>`}).join('')+
+   `</tbody></table></div></div>`;
 }
 let OPENID=null;                     // which breakdown is on screen, so edits can refresh it
 function openSession(id){
@@ -1525,15 +1566,37 @@ function openSession(id){
      balls.map((b,i)=>`<tr><td>${i+1}</td><td>${(+b.ev).toFixed(1)}</td><td>${b.la!=null?(+b.la).toFixed(0)+'°':'—'}</td>
        <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${((b.btype||bucket(b.la))||'—').toUpperCase()}</td><td>${esc(b.result||'—')}</td></tr>`).join('')+
      `</tbody></table></div></div>`:''}
-   ${(s.parts&&s.parts.length>1)?`<div style="margin-top:18px"><label>${s.parts.length} rounds uploaded on this date</label>
-     <div class="scroll"><table><thead><tr><th>Round</th><th>${kindOf(s)==='catching'?'Throws':'Balls'}</th><th>Type</th><th></th></tr></thead><tbody>`+
-     s.parts.map((pt,i)=>{const n=((kindOf(s)==='catching'?pt.throws:pt.balls)||[]).length;
-       return `<tr><td>#${i+1}</td><td>${n||'—'}</td><td>${typeSelect(pt,true)}</td>
-         <td><button class="btn ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:rgba(239,77,90,.4)"
-           onclick="delSession('${pt.id}')">Delete</button></td></tr>`}).join('')+
-     `</tbody></table></div></div>`
-   :`<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')" style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`}`;
+   ${roundsTable(s,id)}`;
   if(!dlg.open)dlg.showModal();   // re-rendering an open breakdown must not re-show it
+}
+// Rounds on the same date can come from different pitchers — the pitch speed and exit velo
+// per round make that obvious, and each round can be grouped, kept separate or excluded.
+function roundsTable(s,id){
+  const rounds=roundsOfDate(s), cat=kindOf(s)==='catching';
+  if(rounds.length<2)
+    return `<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')"
+      style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`;
+  const head=cat?['Round','Throws','Pitch in','Avg pop']:['Round','Balls','Avg pitch','Avg EV'];
+  return `<div style="margin-top:18px"><label>${rounds.length} rounds logged on ${esc(s.date)}</label>
+    <div class="hint" style="margin:-4px 0 8px">Different pitcher or machine setting? Keep that round separate so its
+      numbers don't average into the rest of the day — or drop it out of the totals entirely.</div>
+    <div class="scroll"><table><thead><tr>${head.map(h=>'<th>'+h+'</th>').join('')}<th>Type</th><th>Counts as</th><th></th></tr></thead><tbody>`+
+    rounds.map((pt,i)=>{
+      const st=sessionStats(pt), d=dispo(pt), n=((cat?pt.throws:pt.balls)||[]).length;
+      const ks=cat?['avgPop','maxVelo']:['avgEV','maxEV'];
+      const here=pt.id===id||(s.parts||[]).some(x=>x.id===pt.id);
+      return `<tr style="${d==='out'?'opacity:.5':''}">
+        <td>#${i+1}${here?'':' <span class="chip" style="font-size:9px">other</span>'}</td>
+        <td>${n||'—'}</td>
+        <td>${pt.pitch!=null?Math.round(pt.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>
+        <td style="font-weight:700">${fmt(ks[0],num(st[ks[0]]))}</td>
+        <td>${typeSelect(pt,true)}</td>
+        <td><select class="inline sm" onchange="setGroup('${pt.id}',this.value)">
+          ${Object.keys(GROUPS).map(g=>`<option value="${g}"${g===d?' selected':''}>${GROUPS[g]}</option>`).join('')}
+        </select></td>
+        <td><button class="btn ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:rgba(239,77,90,.4)"
+          onclick="delSession('${pt.id}')">Delete</button></td></tr>`}).join('')+
+    `</tbody></table></div></div>`;
 }
 function delSession(id){
   if(!confirm('Delete this round? This cannot be undone.'))return;
