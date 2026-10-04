@@ -78,7 +78,9 @@ Hard hit = at or above the threshold on the Player & Data tab (defaults to the a
 Balls in play are plotted on a drawn field - dirt infield, foul lines, fence arc with distance
 rings - using the export's own `Spray Chart X/Z` landing coordinates when present, and distance
 plus horizontal angle when not. Dots are coloured by the simulated outcome (single / double /
-triple / home run / out), and the fence is drawn at 300 ft or further if the hits need it, so the
+triple / home run / out), falling back to batted-ball type for rounds logged before the app read
+the `Res` column - re-upload those CSVs and the outcomes fill in (a re-upload of the same round
+refreshes it in place instead of duplicating it), and the fence is drawn at 300 ft or further if the hits need it, so the
 picture stays field-shaped rather than zooming to a 12U cage.
 
 ### Simulated at-bats

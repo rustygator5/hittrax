@@ -887,6 +887,9 @@ function landing(b){
   return {x:Math.sin(r)*d, z:Math.cos(r)*d};
 }
 const HITCOL={single:'#2fbf71',double:'#3d6df0',triple:'#8b5cf6',hr:'#FA4616',out:'#ef4d5a',error:'#f2b13c'};
+const TYPECOL={gb:'#f2b13c',ld:'#2fbf71',fb:'#3d6df0',pu:'#ef4d5a'};
+const TYPENAME={gb:'Ground ball',ld:'Line drive',fb:'Fly ball',pu:'Pop-up'};
+const ballCol=b=>HITCOL[b.result]||TYPECOL[b.btype||bucket(b.la)]||'#93a4c6';
 function fieldChart(balls){
   const pts=balls.map(b=>({p:landing(b),b})).filter(o=>o.p);
   if(!pts.length)return '<div class="hint">No landing coordinates in this data.</div>';
@@ -903,7 +906,7 @@ function fieldChart(balls){
   const baseD=Math.min(fence*0.24,70), dirtR=baseD*Math.SQRT2+18;   // dirt has to clear second base
   const b1=pol(baseD,45), b2=P(0,baseD*Math.SQRT2), b3=pol(baseD,-45), mound=P(0,baseD*0.70);
   const dots=pts.map(({p,b})=>{const [x,y]=P(p.x,p.z);
-    const col=HITCOL[b.result]||'#93a4c6';
+    const col=ballCol(b);
     return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.6" fill="${col}" stroke="#0b1220" stroke-width="1.2" opacity=".95">
       <title>${(+b.ev||0).toFixed(1)} mph, ${b.la!=null?(+b.la).toFixed(0)+'°':'—'}, ${Math.round(Math.hypot(p.x,p.z))} ft${b.result?' — '+b.result:''}</title></circle>`}).join('');
   let rings='';
@@ -925,8 +928,13 @@ function fieldChart(balls){
    <div class="legend">${[['single','Single'],['double','Double'],['triple','Triple'],['hr','Home run'],['out','Out']]
      .filter(c=>pts.some(o=>o.b.result===c[0]))
      .map(c=>`<span><i style="background:${HITCOL[c[0]]}"></i>${c[1]}</span>`).join('')}
-     ${pts.some(o=>!o.b.result)?'<span><i style="background:#93a4c6"></i>No outcome</span>':''}
-     <span style="margin-left:auto">${pts.length} balls · fence drawn at ${fence} ft</span></div>`;
+     ${Object.keys(TYPECOL).filter(k=>pts.some(o=>!o.b.result&&(o.b.btype||bucket(o.b.la))===k))
+       .map(k=>`<span><i style="background:${TYPECOL[k]}"></i>${TYPENAME[k]}</span>`).join('')}
+     ${pts.some(o=>!o.b.result&&!(o.b.btype||bucket(o.b.la)))?'<span><i style="background:#93a4c6"></i>Unclassified</span>':''}
+     <span style="margin-left:auto">${pts.length} balls · fence drawn at ${fence} ft</span></div>
+   ${pts.every(o=>!o.b.result)?`<div class="note warn" style="margin-top:10px">No simulated outcomes stored for these balls —
+     they were logged before the app read HitTrax's <span class="mono">Res</span> column, so they're coloured by batted-ball
+     type instead. Re-upload the same CSV and it will fill the outcomes in; it replaces the round rather than duplicating it.</div>`:''}`;
 }
 function sprayChart(balls){
   const b=balls.filter(x=>x.dist>0&&x.horiz!=null&&!isNaN(x.horiz));
@@ -1531,6 +1539,16 @@ function renderSplit(){
       return `<tr><td>${g.date}</td><td>${s.swings}</td><td>${fmt('maxEV',s.maxEV)}</td><td>${fmt('avgEV',s.avgEV)}</td></tr>`}).join('')+
     `</tbody></table></div>`;
 }
+// Same date, same number of rows, same first and last ball: that's the same export again.
+function roundSig(kind,date,rows){
+  const f=rows[0]||{}, l=rows[rows.length-1]||{};
+  const n=v=>v==null?'-':(+v).toFixed(2);
+  return [kind,date,rows.length,n(f.ev||f.pop),n(f.la||f.velo),n(l.ev||l.pop),n(l.la||l.velo)].join('|');
+}
+function findSameRound(kind,date,rows){
+  return DB.sessions.find(s=>kindOf(s)===kind&&s.date===date&&
+    roundSig(kind,s.date,(kind==='catching'?s.throws:s.balls)||[])===roundSig(kind,date,rows));
+}
 function saveSession(){
   const g=id=>document.getElementById(id);
   const cat=LOGKIND==='catching';
@@ -1545,13 +1563,15 @@ function saveSession(){
     if(!PARSED.length){alert('Nothing parsed yet — upload a CSV or paste rows, then hit Parse.');return}
     const splitBox=document.getElementById('f_split');
     if(splitBox&&splitBox.checked){        // one session per date in the file
-      const groups=groupByDate(), now=Date.now();
-      groups.forEach((gr,i)=>{const d=pack(gr.balls);
-        DB.sessions.push({...s,...d,id:uid(),mtime:now+i,
-          pitch:s.pitch!=null?s.pitch:(d.pitch!=null?d.pitch:null),
-          date:gr.date==='(no date)'?s.date:gr.date})});
+      const groups=groupByDate(), now=Date.now(); let fresh=0,again=0;
+      groups.forEach((gr,i)=>{
+        const date=gr.date==='(no date)'?s.date:gr.date, d=pack(gr.balls);
+        const pitch=s.pitch!=null?s.pitch:(d.pitch!=null?d.pitch:null);
+        const dupe=findSameRound(LOGKIND,date,gr.balls);
+        if(dupe){Object.assign(dupe,d,{pitch,mtime:now+i});again++}
+        else{DB.sessions.push({...s,...d,id:uid(),mtime:now+i,pitch,date});fresh++}});
       save(); clearParse(); VIEWKIND=LOGKIND;
-      alert(`Saved ${groups.length} sessions.`); go('sessions'); return;
+      alert(savedMsg(fresh,again)); go('sessions'); return;
     }
     Object.assign(s,pack(PARSED));   // pitch speed comes from the file
   }else{
@@ -1563,7 +1583,21 @@ function saveSession(){
     s.summary=sum;
   }
   s.mtime=Date.now();
+  // the same export again? refresh that round in place rather than logging it twice
+  const rows=LOGMODE==='detail'?PARSED:null;
+  const dupe=rows?findSameRound(LOGKIND,s.date,rows):null;
+  if(dupe){Object.assign(dupe,pack(rows),{mtime:Date.now()});
+    if(s.notes)dupe.notes=s.notes;
+    save(); clearParse(); VIEWKIND=LOGKIND;
+    alert('That round was already logged — refreshed it in place (outcomes and all) instead of adding a duplicate.');
+    go('dash'); return;}
   DB.sessions.push(s); save(); clearParse(); VIEWKIND=LOGKIND; go('dash');
+}
+function savedMsg(fresh,again){
+  const bits=[];
+  if(fresh)bits.push(`Saved ${fresh} session${fresh>1?'s':''}`);
+  if(again)bits.push(`refreshed ${again} already logged`);
+  return bits.join(' · ')+'.';
 }
 
 /* ---------- trends ---------- */
