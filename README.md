@@ -97,7 +97,9 @@ HitTrax's own display. The left/right halves are inferred from the exports - the
 are unambiguous in the data, the horizontal is not - so flag it if your zone grid is mirrored.
 
 ## Views
-- **Dashboard** — latest session with deltas vs the previous one, PB badges, age benchmark bar, "what's moving"
+- **Dashboard** — latest session with deltas vs the previous one, PB badges, age benchmark bar,
+  "what's moving". When that date has more than one entry (a grouped day plus rounds kept
+  separate) a picker switches between them — it opens on the grouped day
 - **Trends** — any metric over time with a 3-session rolling average; first / latest / total change
 - **Sessions** — full history with pitch speed per session, tap for the breakdown (scatter, spray
   chart, every batted ball). Session type is a dropdown you can change after the fact — HitTrax

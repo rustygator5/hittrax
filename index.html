@@ -1104,7 +1104,7 @@ function mixBar(s){
 
 /* ============================== views ============================== */
 const TABS=[['dash','Dashboard'],['log','Log Session'],['trends','Trends'],['sessions','Sessions'],['report','Report'],['data','Player & Data']];
-let TAB='dash', TRENDK='maxEV';
+let TAB='dash', TRENDK='maxEV', DASHSEL=null;
 function render(){
   const showKind=countOf('catching')>0||VIEWKIND==='catching';
   document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
@@ -1122,7 +1122,7 @@ function render(){
 }
 function go(t){TAB=t;render();window.scrollTo(0,0)}
 function setKind(k){
-  VIEWKIND=k;
+  VIEWKIND=k; DASHSEL=null;
   const avail=KIND[k].metrics.map(m=>m.k);
   if(!avail.includes(TRENDK))TRENDK=k==='catching'?'avgPop':'maxEV';
   if(TAB==='log')LOGKIND=k;
@@ -1130,6 +1130,27 @@ function setKind(k){
 }
 
 /* ---------- dashboard ---------- */
+// When a date holds more than one entry — a grouped day plus rounds kept separate — the
+// dashboard shows the grouped one by default and lets you flip between them.
+function dashEntries(){
+  const S=sorted(); if(!S.length)return [];
+  const d=S[S.length-1].date;
+  return S.filter(e=>e.date===d);
+}
+function dashPick(){
+  const E=dashEntries(); if(!E.length)return null;
+  return E.find(e=>e.id===DASHSEL)||E.find(e=>!e.solo)||E[E.length-1];
+}
+function dashPicker(){
+  const E=dashEntries(); if(E.length<2)return'';
+  const sel=dashPick();
+  const label=e=>{const n=((kindOf(e)==='catching'?e.throws:e.balls)||[]).length;
+    const what=e.solo?'Separate round':((e.parts&&e.parts.length>1)?`Grouped day · ${e.parts.length} rounds`:'Round');
+    return `${what}${n?` · ${n} ${kindOf(e)==='catching'?'throws':'balls'}`:''}`};
+  return `<div style="margin:10px 0 2px"><div class="seg" style="flex-wrap:wrap">
+    ${E.map(e=>`<button class="${e.id===sel.id?'on':''}" onclick="DASHSEL='${e.id}';render()">${label(e)}</button>`).join('')}
+  </div></div>`;
+}
 function vDash(){
   const S=sorted(), cat=VIEWKIND==='catching';
   if(!S.length)return `<div class="card"><div class="empty">
@@ -1139,7 +1160,7 @@ function vDash(){
       :'Log a HitTrax session — type in the summary numbers off the report screen, or upload the CSV and everything gets calculated for you.'}</p>
     <button class="btn" onclick="LOGKIND='${VIEWKIND}';go('log')">Log first session</button></div></div>`
     + refCard();
-  const last=S[S.length-1], st=sessionStats(last);
+  const last=dashPick(), st=sessionStats(last);
   const b=cat?popBench(DB.player.age):bench(DB.player.age);
   const tiles=KIND[VIEWKIND].core.map(k=>{
     const v=num(st[k]); if(v==null)return'';
@@ -1152,10 +1173,12 @@ function vDash(){
   return `
   <div class="card">
     <div class="row" style="align-items:baseline">
-      <div><h2>Latest session${(last.parts&&last.parts.length>1)?` <span class="chip">${last.parts.length} rounds</span>`:''}</h2>
+      <div><h2>Latest session${last.solo?' <span class="chip a">separate round</span>'
+          :((last.parts&&last.parts.length>1)?` <span class="chip">${last.parts.length} rounds</span>`:'')}</h2>
         <div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div></div>
       <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${last.id}')">Details</button>
     </div>
+    ${dashPicker()}
     <div class="tiles">${tiles}</div>
     ${!cat&&st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
     ${cat?popSplit(st):''}
