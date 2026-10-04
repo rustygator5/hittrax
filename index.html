@@ -97,6 +97,9 @@ tr.clickable:hover td{background:var(--card2)}
 ul.tight{margin:8px 0 0;padding-left:18px;font-size:13.5px}
 ul.tight li{margin:5px 0}
 svg{display:block;max-width:100%}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:18px 14px;text-align:center;background:var(--bg2)}
+.drop.over{border-color:var(--orange);background:rgba(250,70,22,.08)}
+.drop .hint{margin:0}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin-top:8px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 dialog{border:1px solid var(--line);background:var(--card);color:var(--txt);border-radius:16px;padding:0;
@@ -455,10 +458,47 @@ const ALIAS={
   horiz:['horiz','horizangle','horizontalangle','spray','sprayangle','direction','dir','ha'],
   poi:['poi','pointofimpact','contact','impact'],
   result:['result','play','playoutcome','outcome','type','hittype','res'],
-  pitch:['pitchvelo','pitchspeed','pitch','pv']
+  pitch:['pitchvelo','pitchspeed','pitch','pv'],
+  date:['date','sessiondate','timestamp','datetime','day','sessiontimestamp']
 };
 function normKey(h){return h.toLowerCase().replace(/[^a-z]/g,'');}
 function mapCol(h){const n=normKey(h); for(const f in ALIAS){if(ALIAS[f].includes(n))return f;} return null;}
+// "9/14/2026 4:32 PM", "2026-09-14", "14-Sep-26" -> 2026-09-14
+function parseDate(raw){
+  if(raw==null)return null;
+  const s=(''+raw).trim(); if(!s)return null;
+  let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m=s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+  if(m){let y=+m[3]; if(y<100)y+=y<70?2000:1900;
+    return `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;}   // US order, as HitTrax exports
+  const t=Date.parse(s);
+  if(!isNaN(t)){const d=new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  return null;
+}
+// delimited-line split that respects "quoted, fields"
+function splitLine(line,d){
+  const out=[]; let cur='',q=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(q){ if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++} else q=false } else cur+=c }
+    else if(c==='"')q=true;
+    else if(c===d){out.push(cur);cur=''}
+    else cur+=c;
+  }
+  out.push(cur); return out.map(s=>s.trim());
+}
+function numField(raw){
+  let s=(''+raw).trim();
+  if(/^-?\d+,\d{1,2}$/.test(s))s=s.replace(',','.');   // decimal comma ("70,5"), not a thousands separator
+  const v=parseFloat(s.replace(/[^\d.\-]/g,''));
+  return isNaN(v)?null:v;
+}
+function pickDelim(line){
+  const counts=['\t',',',';','|'].map(d=>[d,splitLine(line,d).length]);
+  counts.sort((a,b)=>b[1]-a[1]);
+  return counts[0][1]>1?counts[0][0]:null;
+}
 function parseResult(t){ if(!t)return null; const s=(''+t).toLowerCase().trim();
   if(/home ?run|^hr$|^4$/.test(s))return'hr';
   if(/triple|^3b$|^3$/.test(s))return'triple';
@@ -469,34 +509,48 @@ function parseResult(t){ if(!t)return null; const s=(''+t).toLowerCase().trim();
   if(/out|fly|ground|pop|line ?out|^0$/.test(s))return'out';
   return null;}
 function parsePaste(txt){
-  const lines=txt.trim().split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
-  if(!lines.length)return{balls:[],msg:'Nothing to parse.'};
-  const split=l=>l.includes('\t')?l.split('\t'):(l.includes(',')?l.split(','):l.split(/\s{2,}|\s+/));
-  let cols=null,start=0;
-  const head=split(lines[0]).map(s=>s.trim());
-  if(head.some(h=>mapCol(h))&&head.some(h=>isNaN(parseFloat(h)))){
-    cols=head.map(mapCol); start=1;
+  const lines=(txt||'').replace(/^﻿/,'').split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
+  if(!lines.length)return{balls:[],msg:'Nothing to parse.',dates:[]};
+  // HitTrax exports often carry a title/player row or two above the real header,
+  // so hunt for the line that maps the most known columns instead of assuming row 1.
+  let cols=null,start=0,delim=null,hdr=-1,bestN=1;
+  for(let i=0;i<Math.min(lines.length,25);i++){
+    const d=pickDelim(lines[i]); if(!d)continue;
+    const parts=splitLine(lines[i],d);
+    const mapped=parts.map(mapCol), n=mapped.filter(Boolean).length;
+    if(n>bestN && parts.some(p=>p&&isNaN(parseFloat(p)))){bestN=n;cols=mapped;delim=d;hdr=i}
   }
-  const balls=[];
+  if(cols){start=hdr+1}
+  const split=l=>delim?splitLine(l,delim):l.split(/\t|,|\s{2,}|\s+/).map(s=>s.trim());
+  const balls=[]; let skipped=0;
   for(let i=start;i<lines.length;i++){
-    const parts=split(lines[i]).map(s=>s.trim());
+    const parts=split(lines[i]);
     const b={};
     if(cols){
       cols.forEach((c,j)=>{ if(!c)return; const raw=parts[j]; if(raw==null||raw==='')return;
         if(c==='result')b.result=parseResult(raw);
         else if(c==='poi')b.poi=raw;
-        else {const v=parseFloat((''+raw).replace(/[^\d.\-]/g,'')); if(!isNaN(v))b[c]=v;} });
+        else if(c==='date'){const d=parseDate(raw); if(d)b.date=d}
+        else {const v=numField(raw); if(v!=null)b[c]=v;} });
     }else{
-      const nums=parts.map(p=>parseFloat((''+p).replace(/[^\d.\-]/g,''))).filter(v=>!isNaN(v));
+      const nums=parts.map(numField).filter(v=>v!=null);
       if(nums.length>=1)b.ev=nums[0];
       if(nums.length>=2)b.la=nums[1];
       if(nums.length>=3)b.dist=nums[2];
       const r=parts.map(parseResult).find(Boolean); if(r)b.result=r;
     }
-    if(b.ev!=null&&b.ev>0&&b.ev<200)balls.push(b);
+    if(b.ev!=null&&b.ev>0&&b.ev<200)balls.push(b); else if(parts.length>1)skipped++;
   }
-  return {balls,msg:balls.length?`Parsed ${balls.length} batted ball${balls.length>1?'s':''}.`:
-    'No rows recognized — check that a column holds exit velocity numbers.'};
+  const dates=[...new Set(balls.map(b=>b.date).filter(Boolean))].sort();
+  let msg;
+  if(!balls.length)msg='No rows recognized — check that a column holds exit velocity numbers.';
+  else{
+    msg=`Parsed ${balls.length} batted ball${balls.length>1?'s':''}`;
+    if(dates.length>1)msg+=` across ${dates.length} dates (${dates[0]} → ${dates[dates.length-1]})`;
+    else if(dates.length===1)msg+=` from ${dates[0]}`;
+    msg+='.'+(skipped?` ${skipped} row${skipped>1?'s':''} without a usable exit velo skipped.`:'');
+  }
+  return {balls,msg,dates};
 }
 
 /* ============================== charts (inline SVG) ============================== */
@@ -715,12 +769,12 @@ function refCard(){
 }
 
 /* ---------- log session ---------- */
-let LOGMODE='detail', PARSED=[];
+let LOGMODE='detail', PARSED=[], PDATES=[], RAW=null;
 function vLog(){
   const today=new Date().toISOString().slice(0,10);
   return `<div class="card">
    <h2>Log a session</h2>
-   <div class="hint">Paste the pitch-by-pitch rows for full charts, or just key in the summary numbers off the HitTrax report.</div>
+   <div class="hint">Upload the HitTrax CSV (or paste the rows) for full charts, or just key in the summary numbers off the report.</div>
    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
      <div><label>Date</label><input type="date" id="f_date" value="${today}"></div>
      <div><label>Session type</label><select id="f_type">
@@ -730,7 +784,7 @@ function vLog(){
      <div><label>Location</label><input id="f_loc" placeholder="facility / cage"></div>
    </div>
    <div style="margin-top:14px"><div class="seg">
-     <button class="${LOGMODE==='detail'?'on':''}" onclick="setMode('detail')">Paste batted balls</button>
+     <button class="${LOGMODE==='detail'?'on':''}" onclick="setMode('detail')">Upload / paste batted balls</button>
      <button class="${LOGMODE==='summary'?'on':''}" onclick="setMode('summary')">Type summary</button>
    </div></div>
    <div id="logBody" style="margin-top:14px"></div>
@@ -740,12 +794,21 @@ function vLog(){
      <button class="btn ghost" onclick="go('dash')">Cancel</button></div>
   </div>`;
 }
-function setMode(m){LOGMODE=m;PARSED=[];render()}
+function setMode(m){LOGMODE=m;PARSED=[];RAW=null;PDATES=[];render()}
 function initLog(){
   const el=document.getElementById('logBody');
   if(LOGMODE==='detail'){
-    el.innerHTML=`<label>Batted-ball rows</label>
-      <textarea id="f_paste" placeholder="Paste from HitTrax (CSV, a copied table, or one ball per line).
+    el.innerHTML=`<div class="drop" id="dropZone">
+        <div style="font-size:26px">📄</div>
+        <div><b>Upload the HitTrax CSV</b></div>
+        <div class="hint" style="margin:4px 0 10px">Drop the file here, or pick it — .csv, .tsv or .txt. Title rows above the
+          header are skipped, and a file covering several dates can become one session per date.</div>
+        <button class="btn sec" onclick="document.getElementById('csvFile').click()">Choose file</button>
+        <input type="file" id="csvFile" accept=".csv,.tsv,.txt,text/csv,text/plain" style="display:none" onchange="readCsv(this.files[0])">
+        <div id="fileName" class="hint" style="margin-top:8px"></div>
+      </div>
+      <label style="margin-top:14px">…or paste the rows</label>
+      <textarea id="f_paste" oninput="RAW=null" placeholder="Paste from HitTrax (CSV, a copied table, or one ball per line).
 Column names are auto-detected — Velo / Exit Velocity / EV, LA / Launch Angle, Dist / Distance, Spray / Horiz Angle, Result / Play.
 
 Velo	LA	Dist	Result
@@ -758,6 +821,7 @@ No header? One line per ball works too:  78.4 14 205"></textarea>
         <button class="btn sec" onclick="doParse()">Parse</button>
         <span id="parseMsg" style="font-size:13px;color:var(--dim)"></span></div>
       <div id="preview"></div>`;
+    setupDrop();
   }else{
     el.innerHTML=`<div class="hint" style="margin-bottom:8px">Fill in whatever your report shows — blanks are fine.</div>
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">`+
@@ -766,19 +830,70 @@ No header? One line per ball works too:  78.4 14 205"></textarea>
       `</div>`;
   }
 }
+function setupDrop(){
+  const z=document.getElementById('dropZone'); if(!z)return;
+  ['dragenter','dragover'].forEach(e=>z.addEventListener(e,ev=>{ev.preventDefault();z.classList.add('over')}));
+  ['dragleave','drop'].forEach(e=>z.addEventListener(e,ev=>{ev.preventDefault();z.classList.remove('over')}));
+  z.addEventListener('drop',ev=>{const f=ev.dataTransfer&&ev.dataTransfer.files[0]; if(f)readCsv(f)});
+}
+function readCsv(file){
+  if(!file)return;
+  if(file.size>8*1024*1024){alert('That file is over 8 MB — is it really a HitTrax CSV?');return}
+  const r=new FileReader();
+  r.onload=()=>{
+    RAW=String(r.result||'');
+    const ta=document.getElementById('f_paste');
+    // very large exports stay out of the textarea (slow to render) but still parse in full
+    if(ta)ta.value=RAW.length<=40000?RAW:'';
+    const fn=document.getElementById('fileName');
+    if(fn)fn.innerHTML=`<span class="chip g">${esc(file.name)}</span> ${(file.size/1024).toFixed(0)} KB`
+      +(RAW.length>40000?' — too big to show here, parsed straight from the file':'');
+    doParse();
+  };
+  r.onerror=()=>alert('Could not read that file.');
+  r.readAsText(file);
+}
 function doParse(){
-  const r=parsePaste(document.getElementById('f_paste').value);
-  PARSED=r.balls;
+  const ta=document.getElementById('f_paste');
+  const r=parsePaste(RAW!=null?RAW:(ta?ta.value:''));
+  PARSED=r.balls; PDATES=r.dates;
   document.getElementById('parseMsg').textContent=r.msg;
   const pv=document.getElementById('preview');
   if(!PARSED.length){pv.innerHTML='';return}
+  if(PDATES.length){const d=document.getElementById('f_date'); if(d)d.value=PDATES[0]}
+  const multi=PDATES.length>1;
   const st=computeFromBalls(PARSED,HH());
+  const tiles=s=>['swings','maxEV','avgEV','topEV','hha','avgLA','sweet','ld'].map(k=>
+     s[k]==null?'':`<div class="tile" style="background:var(--bg2)"><div class="k">${MK[k].n}</div>
+       <div class="v" style="font-size:21px">${fmt(k,s[k])}<small>${MK[k].u}</small></div></div>`).join('');
   pv.innerHTML=`<div class="card" style="background:var(--card2)"><h2>Preview</h2>
-   <div class="hint">Computed with a ${HH()} mph hard-hit threshold</div>
-   <div class="tiles">`+['swings','maxEV','avgEV','topEV','hha','avgLA','sweet','ld'].map(k=>
-     st[k]==null?'':`<div class="tile" style="background:var(--bg2)"><div class="k">${MK[k].n}</div>
-       <div class="v" style="font-size:21px">${fmt(k,st[k])}<small>${MK[k].u}</small></div></div>`).join('')+
-   `</div>${st.gb!=null?'<div style="margin-top:12px">'+mixBar(st)+'</div>':''}</div>`;
+   <div class="hint">Computed with a ${HH()} mph hard-hit threshold${multi?' · all dates combined':''}</div>
+   <div class="tiles">${tiles(st)}</div>
+   ${st.gb!=null?'<div style="margin-top:12px">'+mixBar(st)+'</div>':''}
+   ${multi?`<div class="note" style="margin-top:14px">
+      <label style="display:flex;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:13.5px;color:inherit;font-weight:600">
+        <input type="checkbox" id="f_split" checked style="width:auto" onchange="renderSplit()">
+        Save as ${PDATES.length} separate sessions, one per date</label>
+      <div id="splitList" style="margin-top:10px"></div></div>`:''}
+   </div>`;
+  if(multi)renderSplit();
+}
+function avgPitch(balls){
+  const p=balls.map(b=>+b.pitch).filter(v=>v>0&&v<130);
+  return p.length?Math.round(p.reduce((a,c)=>a+c,0)/p.length):null;
+}
+function groupByDate(){
+  const g={}; PARSED.forEach(b=>{const d=b.date||'(no date)'; (g[d]=g[d]||[]).push(b)});
+  return Object.keys(g).sort().map(d=>({date:d,balls:g[d]}));
+}
+function renderSplit(){
+  const el=document.getElementById('splitList'); if(!el)return;
+  const on=document.getElementById('f_split').checked;
+  if(!on){el.innerHTML=`<span class="hint">One session dated by the date field above, with all ${PARSED.length} batted balls.</span>`;return}
+  el.innerHTML=`<div class="scroll"><table><thead><tr><th>Date</th><th>BIP</th><th>Max EV</th><th>Avg EV</th></tr></thead><tbody>`+
+    groupByDate().map(g=>{const s=computeFromBalls(g.balls,HH());
+      return `<tr><td>${g.date}</td><td>${s.swings}</td><td>${fmt('maxEV',s.maxEV)}</td><td>${fmt('avgEV',s.avgEV)}</td></tr>`}).join('')+
+    `</tbody></table></div>`;
 }
 function saveSession(){
   const g=id=>document.getElementById(id);
@@ -787,8 +902,17 @@ function saveSession(){
   if(!s.date){alert('Pick a date.');return}
   if(LOGMODE==='detail'){
     if(!PARSED.length)doParse();
-    if(!PARSED.length){alert('Nothing parsed yet — paste rows and hit Parse.');return}
+    if(!PARSED.length){alert('Nothing parsed yet — upload a CSV or paste rows, then hit Parse.');return}
+    const splitBox=document.getElementById('f_split');
+    if(splitBox&&splitBox.checked){        // one session per date in the file
+      const groups=groupByDate(), now=Date.now();
+      groups.forEach((gr,i)=>DB.sessions.push({...s,id:uid(),mtime:now+i,pitch:s.pitch!=null?s.pitch:avgPitch(gr.balls),
+        date:gr.date==='(no date)'?s.date:gr.date, balls:gr.balls, summary:computeFromBalls(gr.balls,HH())}));
+      save(); PARSED=[];PDATES=[];RAW=null;
+      alert(`Saved ${groups.length} sessions.`); go('sessions'); return;
+    }
     s.balls=PARSED; s.summary=computeFromBalls(PARSED,HH());
+    if(s.pitch==null)s.pitch=avgPitch(PARSED);     // the file usually carries pitch speed per ball
   }else{
     const sum={}; let any=false;
     M.forEach(m=>{const e=document.getElementById('s_'+m.k); if(!e)return;
@@ -798,7 +922,7 @@ function saveSession(){
     s.summary=sum;
   }
   s.mtime=Date.now();
-  DB.sessions.push(s); save(); PARSED=[]; go('dash');
+  DB.sessions.push(s); save(); PARSED=[];PDATES=[];RAW=null; go('dash');
 }
 
 /* ---------- trends ---------- */
