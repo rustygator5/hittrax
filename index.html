@@ -408,7 +408,9 @@ const M=[
 // Catching module (HitTrax measures pop time, exchange, arm strength, throw accuracy,
 // and a projected out/safe outcome). Pop and exchange are LOWER-is-better.
 const CM=[
- {k:'throws',   n:'Throws',             u:'',    d:0, dir:'flat'},
+ {k:'throws',   n:'Clean Throws',       u:'',    d:0, dir:'flat'},
+ {k:'cleanPct',  n:'Clean Rep %',        u:'%',   d:0, dir:'up'},
+ {k:'avgDiff',   n:'Avg Time vs Runner', u:'s',   d:2, dir:'down'},
  {k:'bestPop',  n:'Best Pop Time',      u:'s',   d:2, dir:'down'},
  {k:'avgPop',   n:'Avg Pop Time',       u:'s',   d:2, dir:'down'},
  {k:'top25Pop', n:'Top-25% Avg Pop',    u:'s',   d:2, dir:'down'},
@@ -422,7 +424,7 @@ const CM=[
 ];
 const MK=Object.fromEntries(M.concat(CM).map(m=>[m.k,m]));
 const CORE=['maxEV','avgEV','hha','sweet','ld','avgLA'];
-const CCORE=['bestPop','avgPop','avgExch','maxVelo','onTarget','outPct'];
+const CCORE=['bestPop','avgPop','avgExch','maxVelo','cleanPct','outPct'];
 const KIND={hitting:{label:'Hitting',icon:'⚾',metrics:M,core:CORE,unit:'balls in play'},
             catching:{label:'Catching',icon:'🧤',metrics:CM,core:CCORE,unit:'throws'}};
 const kindOf=s=>s.kind||'hitting';
@@ -469,14 +471,30 @@ function computeFromBalls(balls,hh){
   }
   return s;
 }
+// A HitTrax catching export logs every pitch: clean throw-downs, botched reps (ball on the
+// ground, double clutch - pop balloons past 4s) and rows with no throw at all (pop 0.00).
+// Averaging all of them together hides real progress, so the headline numbers use clean reps
+// and the misfires become their own metric.
+const CLEAN={popLo:1.2,popHi:4.0};
+function throwClass(x){
+  const pop=num(x.pop), velo=num(x.velo);
+  if((pop==null||pop<=0.2)&&(velo==null||velo<=15))return'none';
+  if(pop==null||pop<=0.2)return'nothrow';
+  return (pop<CLEAN.popLo||pop>CLEAN.popHi)?'misfire':'clean';
+}
+const cleanThrows=T=>(T||[]).filter(x=>throwClass(x)==='clean');
 function computeFromThrows(T){
-  const t=(T||[]).filter(x=>num(x.pop)!=null||num(x.velo)!=null);
-  if(!t.length)return null;
-  const pops=t.map(x=>num(x.pop)).filter(v=>v!=null&&v>0.5&&v<6).sort((a,b)=>a-b);
-  const exch=t.map(x=>num(x.exch)).filter(v=>v!=null&&v>0&&v<3);
-  const velos=t.map(x=>num(x.velo)).filter(v=>v!=null&&v>10&&v<120);
+  const all=(T||[]).filter(x=>throwClass(x)!=='none');
+  const t=all.filter(x=>throwClass(x)==='clean');
+  const measured=all.filter(x=>throwClass(x)!=='nothrow');
+  if(!all.length)return null;
+  if(!t.length)return {throws:0,attempts:all.length,misfires:all.length,cleanPct:0};
+  const pops=t.map(x=>num(x.pop)).filter(v=>v!=null).sort((a,b)=>a-b);
+  const exch=t.map(x=>num(x.exch)).filter(v=>v!=null&&v>0.2&&v<3);
+  const velos=t.map(x=>num(x.velo)).filter(v=>v!=null&&v>15&&v<120);
   const miss=t.map(x=>num(x.miss)).filter(v=>v!=null&&v>=0);
-  const called=t.filter(x=>x.outcome==='out'||x.outcome==='safe');
+  const diffs=t.map(x=>num(x.diff)).filter(v=>v!=null);
+  const called=measured.filter(x=>x.outcome==='out'||x.outcome==='safe');
   const avg=a=>a.length?a.reduce((x,c)=>x+c,0)/a.length:null;
   const topN=Math.max(1,Math.round(pops.length*0.25));
   // on target = an explicit flag from the file, else a miss inside ON_TARGET_IN
@@ -486,6 +504,11 @@ function computeFromThrows(T){
   else if(miss.length)onTarget=miss.filter(v=>v<=ON_TARGET_IN).length/miss.length*100;
   return {
     throws:t.length,
+    attempts:all.length,
+    misfires:all.filter(x=>throwClass(x)==='misfire').length,
+    nothrows:all.filter(x=>throwClass(x)==='nothrow').length,
+    cleanPct:all.length?t.length/all.length*100:null,
+    avgDiff:diffs.length?avg(diffs):null,
     bestPop:pops.length?pops[0]:null,
     avgPop:avg(pops),
     top25Pop:pops.length?avg(pops.slice(0,topN)):null,
@@ -557,6 +580,7 @@ function mapCol(h){const n=normKey(h); for(const f in ALIAS){if(ALIAS[f].include
 function parseDate(raw){
   if(raw==null)return null;
   const s=(''+raw).trim(); if(!s)return null;
+  if(/^\d{1,2}:\d{1,2}:\d/.test(s))return null;   // elapsed "Time Stamp" column, not a date
   let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
   m=s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
@@ -653,13 +677,14 @@ function parsePaste(txt){
 /* ---------- catching export ---------- */
 const CALIAS={
   pop:['pop','poptime','poptimesec','poptimeseconds','pt','popsec'],
-  exch:['exchange','exchangetime','transfer','transfertime','exch','release','releasetime'],
-  velo:['velo','armstrength','arm','throwvelo','throwvelocity','velocity','speed','mph','throwspeed'],
-  miss:['miss','missdistance','accuracy','acc','distancefrombase','distfrombase','offtarget','error','distancefromtarget','accuracyin'],
-  outcome:['outcome','projectedoutcome','projection','result','call','safeout','projectedresult'],
+  exch:['exchg','exchange','exchangetime','transfer','transfertime','exch','release','releasetime'],
+  velo:['throw','velo','armstrength','arm','throwvelo','throwvelocity','velocity','speed','mph','throwspeed','throwmph'],
+  miss:['miss','missdistance','accuracy','acc','distancefrombase','distfrombase','offtarget','distancefromtarget','accuracyin'],
+  outcome:['res','outcome','projectedoutcome','projection','result','call','safeout','projectedresult'],
   base:['base','targetbase','target','throwto','throwtobase'],
-  diff:['timedifferential','differential','timediff','diff','delta'],
-  date:['date','sessiondate','timestamp','datetime','day'],
+  diff:['sec','timedifferential','differential','timediff','diff','delta','secs'],
+  pitch:['pitch','pitchvelo','pitchspeed'],
+  date:['date','sessiondate','datetime','day'],
   user:['user','player','playername','name','catcher'],
   level:['level','agegroup','division']
 };
@@ -700,7 +725,8 @@ function parseThrows(txt){
     if(num(t.pop)!=null||num(t.velo)!=null)T.push(t); else if(parts.length>1)skipped++;
   }
   const dates=[...new Set(T.map(t=>t.date).filter(Boolean))].sort();
-  const unmapped=heads.filter((h,j)=>h&&!cols[j]);
+  const NOISE=['','#','no','ab','pts','tag','timestamp','time','session','inning','count','velo2'];
+  const unmapped=heads.filter((h,j)=>h&&!cols[j]&&!NOISE.includes(normKey(h)));
   let msg;
   if(!T.length)msg='No throws recognized — check that a column holds pop time or throw velocity.';
   else{
@@ -719,7 +745,7 @@ function lineChart(S,k,opt={}){
   const W=720,H=250,P={l:44,r:14,t:16,b:30};
   const vals=S.map(p=>p.v); let lo=Math.min(...vals),hi=Math.max(...vals);
   if(opt.band){lo=Math.min(lo,opt.band[0]);hi=Math.max(hi,opt.band[1]);}
-  if(hi-lo<1e-6){hi=lo+1;lo=lo-1;} const pad=(hi-lo)*0.15; lo-=pad;hi+=pad;
+  if(hi-lo<1e-6){const p=Math.max(Math.abs(lo)*0.06,0.05); hi=lo+p; lo=lo-p;}   // single session: keep the scale sane const pad=(hi-lo)*0.15; lo-=pad;hi+=pad;
   if(MK[k].u==='%'){lo=Math.max(0,lo);hi=Math.min(100,hi);}
   const x=i=>P.l+(S.length===1?(W-P.l-P.r)/2:i*(W-P.l-P.r)/(S.length-1));
   const y=v=>P.t+(H-P.t-P.b)*(1-(v-lo)/(hi-lo));
@@ -793,7 +819,7 @@ function sprayChart(balls){
 }
 // pop time per throw, with the age benchmark lines behind it
 function popChart(T){
-  const t=T.filter(x=>num(x.pop)!=null);
+  const t=cleanThrows(T);
   if(t.length<2)return'';
   const W=700,H=220,P={l:44,r:12,t:14,b:26};
   const b=popBench(DB.player.age);
@@ -1187,8 +1213,12 @@ function doParseThrows(txt){
   if(PDATES.length){const d=document.getElementById('f_date'); if(d)d.value=PDATES[0]}
   const st=computeFromThrows(PARSED), multi=PDATES.length>1;
   pv.innerHTML=`<div class="card" style="background:var(--card2)"><h2>Preview</h2>
-   <div class="hint">On target = inside ${ON_TARGET_IN} in of the bag${multi?' · all dates combined':''}</div>
-   <div class="tiles">`+['throws','bestPop','avgPop','avgExch','maxVelo','avgVelo','onTarget','outPct'].map(k=>
+   <div class="hint">Headline numbers use clean reps only${(()=>{const s=computeFromThrows(PARSED);
+     if(!s)return'';const bad=[];
+     if(s.misfires)bad.push(`${s.misfires} misfire${s.misfires>1?'s':''} (pop outside ${CLEAN.popLo}–${CLEAN.popHi}s)`);
+     if(s.nothrows)bad.push(`${s.nothrows} rep${s.nothrows>1?'s':''} with no throw logged`);
+     return bad.length?` — ${s.throws} of ${s.attempts} reps clean; ${bad.join(' and ')} counted in Clean Rep % but kept out of the averages`:''})()}${multi?' · all dates combined':''}</div>
+   <div class="tiles">`+['throws','bestPop','avgPop','avgExch','maxVelo','avgVelo','cleanPct','outPct','onTarget','avgDiff'].map(k=>
      st[k]==null?'':`<div class="tile" style="background:var(--bg2)"><div class="k">${MK[k].n}</div>
        <div class="v" style="font-size:21px">${fmt(k,st[k])}<small>${MK[k].u}</small></div></div>`).join('')+
    `</div>${popSplit(st)}
@@ -1313,12 +1343,15 @@ function openSession(id){
    <div class="tiles">${tiles}</div>
    ${st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
    ${thr.length?popSplit(st):''}
-   ${thr.length?`<div style="margin-top:18px"><label>Pop time by throw</label>${popChart(thr)}</div>`:''}
+   ${thr.length?`<div style="margin-top:18px"><label>Pop time by throw</label>${popChart(thr)}
+     ${(num(st.misfires)||num(st.nothrows))?`<div class="hint">${(num(st.misfires)||0)+(num(st.nothrows)||0)} of ${st.attempts} reps not plotted (misfire or no throw) — they're in Clean Rep %.</div>`:''}</div>`:''}
    ${thr.length?`<div style="margin-top:18px"><label>Throws (${thr.length})</label><div class="scroll" style="max-height:260px">
-     <table class="mono"><thead><tr><th>#</th><th>Pop</th><th>Exch</th><th>Velo</th><th>Miss</th><th>Base</th><th>Call</th></tr></thead><tbody>`+
-     thr.map((x,i)=>`<tr><td>${i+1}</td><td>${x.pop!=null?(+x.pop).toFixed(2):'—'}</td><td>${x.exch!=null?(+x.exch).toFixed(2):'—'}</td>
-       <td>${x.velo!=null?(+x.velo).toFixed(1):'—'}</td><td>${x.miss!=null?Math.round(x.miss)+'"':(x.ontarget===true?'on':(x.ontarget===false?'off':'—'))}</td>
-       <td>${esc(x.base||'—')}</td><td>${x.outcome?(x.outcome==='out'?'<span class="chip g">out</span>':'<span class="chip r">safe</span>'):'—'}</td></tr>`).join('')+
+     <table class="mono"><thead><tr><th>#</th><th>Pop</th><th>Exch</th><th>Velo</th><th>±Sec</th><th>Call</th><th>Rep</th></tr></thead><tbody>`+
+     thr.map((x,i)=>{const cl=throwClass(x);
+      return `<tr style="${cl==='clean'?'':'opacity:.6'}"><td>${i+1}</td><td>${x.pop>0?(+x.pop).toFixed(2):'—'}</td><td>${x.exch>0?(+x.exch).toFixed(2):'—'}</td>
+       <td>${x.velo!=null?(+x.velo).toFixed(1):'—'}</td><td>${x.diff!=null&&x.pop>0?((+x.diff>0?'+':'')+(+x.diff).toFixed(2)):'—'}</td>
+       <td>${x.outcome&&x.pop>0?(x.outcome==='out'?'<span class="chip g">out</span>':'<span class="chip r">safe</span>'):'—'}</td>
+       <td>${cl==='clean'?'':(cl==='misfire'?'<span class="chip a">misfire</span>':'<span class="chip">no throw</span>')}</td></tr>`}).join('')+
      `</tbody></table></div></div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
    ${balls.length&&balls.some(b=>b.horiz!=null)?`<div style="margin-top:18px"><label>Spray chart</label>${sprayChart(balls)}</div>`:''}

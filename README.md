@@ -30,9 +30,20 @@ Upload that export the same way as a hitting CSV, or type the session summary. T
 - Pop time by throw, with the age benchmark lines drawn behind it
 - Age benchmarks for pop time (lower is better), from the NextCommit / TopVelocity / Catching-101 charts
 
-Column names are auto-detected (Pop Time, Exchange / Transfer, Velo / Arm Strength, Accuracy / Miss,
-Outcome, Base, Date). Milliseconds are converted to seconds, feet to inches. Anything it doesn't
-recognise is listed under the preview so the aliases can be extended.
+Confirmed against a real export whose header is:
+`#, Date, Time Stamp, Pitch, Throw, Pop, Exchg, Res, +/- Sec, Catcher`
+(Throw = arm strength, Res = out/safe, +/- Sec = time vs. the runner, Pitch = pitch speed in).
+Other names are matched too - Pop Time, Exchange / Transfer, Velo / Arm Strength, Accuracy / Miss,
+Outcome, Base, Date. Milliseconds convert to seconds, feet to inches, and anything unrecognised
+is listed under the preview.
+
+### Clean reps vs. misfires
+A real session is not 22 clean throw-downs. HitTrax logs every pitch, so a dropped ball or a
+double clutch shows up as a pop time of 5-6 seconds, and a rep with no throw at all shows up as
+0.00. Averaging those in buries real progress, so the headline numbers (pop, exchange, arm
+strength) use **clean reps only** - pop between 1.2 and 4.0 s - and the rest become
+**Clean Rep %**, a metric worth tracking in its own right. Every rep still appears in the
+session's throw table, tagged "misfire" or "no throw".
 
 ## What it tracks
 Max EV, Avg EV, Top-25% Avg EV, hard-hit average, barrel %, avg launch angle, sweet-spot LA %,
