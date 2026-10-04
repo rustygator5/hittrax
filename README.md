@@ -53,6 +53,15 @@ Definitions: GB <10 deg, LD 10-25, FB 25-50, PU >50. Sweet spot = 8-32 deg.
 Hard hit = at or above the threshold on the Player & Data tab (defaults to the age group's
 "good" floor). Barrel = hard hit AND 8-32 deg.
 
+### Strike-zone heat map
+HitTrax tags every pitch with a zone (1-9 inside the strike zone, 10-13 the out-of-zone
+quadrants). The dashboard draws those as a heat map across every logged session - inner 3x3 grid
+inside the zone box, four quadrants in the ring around it - coloured by average exit velo,
+hard-hit % or ball count, with the same map per session in the session detail. Cells with one or
+two balls are faded; the zone number sits in every cell so the layout can be checked against
+HitTrax's own display. The left/right halves are inferred from the exports - the vertical tiers
+are unambiguous in the data, the horizontal is not - so flag it if your zone grid is mirrored.
+
 ## Views
 - **Dashboard** — latest session with deltas vs the previous one, PB badges, age benchmark bar, "what's moving"
 - **Trends** — any metric over time with a 3-session rolling average; first / latest / total change
