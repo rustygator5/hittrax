@@ -121,6 +121,17 @@ are unambiguous in the data, the horizontal is not - so flag it if your zone gri
 - **Report** — printable progress report (print to PDF or copy as text) for coaches
 - **Player & Data** — player info, hard-hit threshold, JSON backup, CSV export, import
 
+## Source files are kept
+Every upload (and every pasted batch) is stored with its session, and the parser carries a
+version number. When the app learns to read a new HitTrax column, the next load re-reads those
+stored files and fills the new data into old sessions on its own - no re-uploading, and a banner
+says how many sessions were refreshed. Roughly 5 KB per session; Player & Data shows the total
+and offers "Re-read them now" or "Delete stored files".
+
+Sessions logged before this existed don't have a file to re-read; those still show the amber
+"missing data the app can now read" notice with a one-click jump to re-upload, which refreshes the
+round in place and attaches the file for next time.
+
 ## Data & sync
 Every session is saved to the browser's localStorage first, so the app works with no signal at
 the cage. Sign in (Player & Data -> Sync across devices, or the pill in the header) with the same

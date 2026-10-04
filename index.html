@@ -162,7 +162,11 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 /* ============================== storage ============================== */
 const KEY='hittrax.tracker.v1';
 const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
-const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],deleted:[],goals:[],updatedAt:0});
+// Bump whenever the parser learns a new column — stored source files are re-read on boot so
+// older rounds pick up whatever the app can now understand.
+const PARSER_V=4;
+const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],
+  files:{},parserV:PARSER_V,deleted:[],goals:[],updatedAt:0});
 let DB=blank();
 function lsKey(){return session?KEY+'.data.'+session.user.id:KEY}
 function load(){
@@ -229,6 +233,8 @@ function setSync(s){
 function mergeDocs(a,b){
   const newer=(a.updatedAt||0)>=(b.updatedAt||0)?a:b, older=newer===a?b:a;
   const out=blank();
+  out.files=Object.assign({},a.files||{},b.files||{});
+  out.parserV=Math.max(a.parserV||0,b.parserV||0);
   out.player=newer.player&&newer.player.name!==undefined?newer.player:older.player;
   out.settings=newer.settings||older.settings||{};
   out.updatedAt=Math.max(a.updatedAt||0,b.updatedAt||0);
@@ -1158,14 +1164,18 @@ function dataGaps(balls){
   if(!balls.some(b=>landing(b)))g.push('landing coordinates — no spray chart');
   return g;
 }
-function gapsCard(balls){
+function gapsCard(balls,session){
   const g=dataGaps(balls); if(!g.length)return'';
+  const stored=session&&(session.parts||[session]).some(p=>p.src&&DB.files&&DB.files[p.src.f]);
   return `<div class="card note warn">
     <b>This round is missing data the app can now read.</b>
     <ul class="tight">${g.map(x=>'<li>'+x+'</li>').join('')}</ul>
-    <div style="margin-top:10px">Re-upload the same CSV and it refreshes that round in place — no duplicate, and the
-      type, grouping and notes stay as they are.</div>
-    <div class="row" style="margin-top:12px"><button class="btn" onclick="LOGKIND=VIEWKIND;go('log')">Re-upload the CSV</button></div>
+    ${stored
+      ?`<div style="margin-top:10px">Its source file is stored, so the columns simply weren't in the export.</div>`
+      :`<div style="margin-top:10px">It was logged before the app kept source files. Re-upload the same CSV once —
+         it refreshes the round in place (no duplicate, type and grouping kept) and from then on new columns fill
+         themselves in.</div>
+        <div class="row" style="margin-top:12px"><button class="btn" onclick="LOGKIND=VIEWKIND;go('log')">Re-upload the CSV</button></div>`}
   </div>`;
 }
 function plateCard(balls){
@@ -1259,6 +1269,13 @@ function dashPicker(){
     ${E.map(e=>`<button class="${e.id===sel.id?'on':''}" onclick="DASHSEL='${e.id}';render()">${label(e)}</button>`).join('')}
   </div></div>`;
 }
+function backfillBanner(){
+  if(!BACKFILLED)return'';
+  const n=BACKFILLED;
+  return `<div class="card note" style="display:flex;align-items:center;gap:10px">
+    <span>Re-read ${n} stored session${n>1?'s':''} with the latest parser — any new columns are filled in.</span>
+    <button class="btn ghost" style="margin-left:auto;padding:5px 11px;font-size:12.5px" onclick="BACKFILLED=0;render()">Dismiss</button></div>`;
+}
 function vDash(){
   const S=sorted(), cat=VIEWKIND==='catching';
   if(!S.length)return `<div class="card"><div class="empty">
@@ -1278,7 +1295,7 @@ function vDash(){
       <div class="v">${fmt(k,v)}<small>${MK[k].u}</small></div>
       <div class="d ${dirClass(k,d)}">${d==null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'}</div></div>`;
   }).join('');
-  return `
+  return backfillBanner()+`
   <div class="card">
     <div class="row" style="align-items:baseline">
       <div><h2>Latest session${last.solo?' <span class="chip a">separate round</span>'
@@ -1292,7 +1309,7 @@ function vDash(){
     ${cat?popSplit(st):''}
   </div>
   ${b?(cat?popBenchCard(st,b):benchCard(st,b)):''}
-  ${cat?'':gapsCard(last.balls)}
+  ${cat?'':gapsCard(last.balls,last)}
   ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
   ${cat?'':plateCard(last.balls||[])}
@@ -1482,7 +1499,7 @@ function vLog(){
 }
 function setMode(m){LOGMODE=m;clearParse();render()}
 function setLogKind(k){LOGKIND=k;clearParse();render()}
-function clearParse(){PARSED=[];RAW=null;PDATES=[];UNMAPPED=[]}
+function clearParse(){PARSED=[];RAW=null;RAWNAME=null;PDATES=[];UNMAPPED=[]}
 function initLog(){
   const el=document.getElementById('logBody'), cat=LOGKIND==='catching';
   if(LOGMODE==='detail'){
@@ -1528,8 +1545,10 @@ function setupDrop(){
   ['dragleave','drop'].forEach(e=>z.addEventListener(e,ev=>{ev.preventDefault();z.classList.remove('over')}));
   z.addEventListener('drop',ev=>{const f=ev.dataTransfer&&ev.dataTransfer.files[0]; if(f)readCsv(f)});
 }
+let RAWNAME=null;
 function readCsv(file){
   if(!file)return;
+  RAWNAME=file.name;
   if(file.size>8*1024*1024){alert('That file is over 8 MB — is it really a HitTrax CSV?');return}
   const r=new FileReader();
   r.onload=()=>{
@@ -1651,6 +1670,42 @@ function findSameRound(kind,date,rows){
   return DB.sessions.find(s=>kindOf(s)===kind&&s.date===date&&
     roundSig(kind,s.date,(kind==='catching'?s.throws:s.balls)||[])===roundSig(kind,date,rows));
 }
+/* ---------- stored source files + backfill ---------- */
+const MAXFILE=1200000;                       // ~1.2 MB of CSV is already a huge session
+function storeFile(name,text){
+  if(!text||text.length>MAXFILE)return null;
+  const id=uid();
+  DB.files=DB.files||{};
+  DB.files[id]={name:name||'pasted rows',text,ts:Date.now()};
+  return id;
+}
+function fileBytes(){return Object.values(DB.files||{}).reduce((a,f)=>a+(f.text||'').length,0)}
+function pruneFiles(){                       // drop files no session points at any more
+  const used=new Set(DB.sessions.map(s=>s.src&&s.src.f).filter(Boolean));
+  Object.keys(DB.files||{}).forEach(id=>{if(!used.has(id))delete DB.files[id]});
+}
+// Re-read a round from the file it came from, so new columns appear without a re-upload.
+function backfillSession(s){
+  const f=s.src&&DB.files&&DB.files[s.src.f]; if(!f)return false;
+  const cat=kindOf(s)==='catching';
+  const r=cat?parseThrows(f.text):parsePaste(f.text);
+  let rows=cat?r.throws:r.balls;
+  if(!rows.length)return false;
+  if(r.dates.length>1&&s.src.date)rows=rows.filter(x=>x.date===s.src.date);
+  const had=((cat?s.throws:s.balls)||[]).length;
+  if(!rows.length||(had&&Math.abs(rows.length-had)>Math.max(2,had*0.1)))return false;  // not the same round
+  const before=JSON.stringify(cat?s.throws:s.balls);
+  if(cat){s.throws=rows; s.summary=computeFromThrows(rows)}
+  else{s.balls=rows; s.summary=computeFromBalls(rows,HH())}
+  const ap=avgPitch(rows); if(ap!=null)s.pitch=ap;
+  const changed=JSON.stringify(cat?s.throws:s.balls)!==before;
+  if(changed)s.mtime=Date.now();
+  return changed;
+}
+function backfillAll(){
+  let n=0; DB.sessions.forEach(s=>{if(backfillSession(s))n++});
+  return n;
+}
 function saveSession(){
   const g=id=>document.getElementById(id);
   const cat=LOGKIND==='catching';
@@ -1666,12 +1721,15 @@ function saveSession(){
     const splitBox=document.getElementById('f_split');
     if(splitBox&&splitBox.checked){        // one session per date in the file
       const groups=groupByDate(), now=Date.now(); let fresh=0,again=0;
+      const fid=storeFile(RAWNAME,RAW!=null?RAW:(g('f_paste')||{}).value);
       groups.forEach((gr,i)=>{
         const date=gr.date==='(no date)'?s.date:gr.date, d=pack(gr.balls);
         const pitch=s.pitch!=null?s.pitch:(d.pitch!=null?d.pitch:null);
+        const src=fid?{f:fid,date:groups.length>1?date:null}:null;
         const dupe=findSameRound(LOGKIND,date,gr.balls);
-        if(dupe){Object.assign(dupe,d,{pitch,mtime:now+i});again++}
-        else{DB.sessions.push({...s,...d,id:uid(),mtime:now+i,pitch,date});fresh++}});
+        if(dupe){Object.assign(dupe,d,{pitch,mtime:now+i},src?{src}:{});again++}
+        else{DB.sessions.push({...s,...d,id:uid(),mtime:now+i,pitch,date,src});fresh++}});
+      pruneFiles();
       save(); clearParse(); VIEWKIND=LOGKIND;
       alert(savedMsg(fresh,again)); go('sessions'); return;
     }
@@ -1687,13 +1745,15 @@ function saveSession(){
   s.mtime=Date.now();
   // the same export again? refresh that round in place rather than logging it twice
   const rows=LOGMODE==='detail'?PARSED:null;
+  if(rows){const fid=storeFile(RAWNAME,RAW!=null?RAW:(g('f_paste')||{}).value); if(fid)s.src={f:fid,date:null}}
   const dupe=rows?findSameRound(LOGKIND,s.date,rows):null;
-  if(dupe){Object.assign(dupe,pack(rows),{mtime:Date.now()});
+  if(dupe){Object.assign(dupe,pack(rows),{mtime:Date.now()},s.src?{src:s.src}:{});
     if(s.notes)dupe.notes=s.notes;
+    pruneFiles();
     save(); clearParse(); VIEWKIND=LOGKIND;
     alert('That round was already logged — refreshed it in place (outcomes and all) instead of adding a duplicate.');
     go('dash'); return;}
-  DB.sessions.push(s); save(); clearParse(); VIEWKIND=LOGKIND; go('dash');
+  DB.sessions.push(s); pruneFiles(); save(); clearParse(); VIEWKIND=LOGKIND; go('dash');
 }
 function savedMsg(fresh,again){
   const bits=[];
@@ -1787,6 +1847,7 @@ function excludedCard(){
       </select></td></tr>`}).join('')+
    `</tbody></table></div></div>`;
 }
+let BACKFILLED=0;
 let OPENID=null;                     // which breakdown is on screen, so edits can refresh it
 function openSession(id){
   const s=findSession(id); if(!s)return;
@@ -1869,6 +1930,7 @@ function delSession(id){
   OPENID=null;
   DB.sessions=DB.sessions.filter(s=>s.id!==id);
   DB.deleted.push({id,ts:Date.now()});      // tombstone, so the delete syncs instead of the row coming back
+  pruneFiles();
   save(); dlg.close(); render();
 }
 
@@ -1933,6 +1995,17 @@ function vData(){
    <div id="acctState">${accountPanel()}</div>
    <div class="row" style="margin-top:12px"><button class="btn ${session?'sec':''}" onclick="openAccount()">${session?'Manage sync':'Sign in to sync'}</button></div></div>
 
+   <div class="card"><h2>Source files</h2>
+   <div class="hint">Every upload is kept with its session, so when the app learns a new HitTrax column
+     your old sessions pick it up on their own — no re-uploading.</div>
+   <div class="tiles">
+     <div class="tile"><div class="k">Files kept</div><div class="v">${Object.keys(DB.files||{}).length}</div></div>
+     <div class="tile"><div class="k">Space used</div><div class="v">${(fileBytes()/1024).toFixed(0)}<small>KB</small></div></div>
+     <div class="tile"><div class="k">Sessions linked</div><div class="v">${DB.sessions.filter(s=>s.src&&DB.files&&DB.files[s.src.f]).length}<small>of ${DB.sessions.length}</small></div></div>
+   </div>
+   <div class="row" style="margin-top:12px"><button class="btn sec" onclick="reparseNow()">Re-read them now</button>
+     <button class="btn ghost" onclick="dropFiles()">Delete stored files</button></div></div>
+
    <div class="card"><h2>Backup &amp; transfer</h2>
    <div class="hint">${session?'Synced to your account — an export is still the belt-and-braces copy.':'Data lives in this browser only. Export before switching phones or clearing history.'}</div>
    <div class="row"><button class="btn sec" onclick="expJSON()">Export backup (.json)</button>
@@ -1956,6 +2029,15 @@ function vData(){
    </ul>
    <div class="note warn" style="margin-top:12px">Compare like with like: tee, front toss, machine and live BP produce different exit velos.
    Filter your read by session type when you judge progress.</div></div>`;
+}
+function reparseNow(){
+  const n=backfillAll();
+  if(n){DB.parserV=PARSER_V; save();}
+  render(); alert(n?`Re-read the stored files — ${n} session${n>1?'s':''} updated.`:'Re-read the stored files — everything was already current.');
+}
+function dropFiles(){
+  if(!confirm('Delete the stored source files? Your sessions and their numbers stay, but future columns will need a re-upload.'))return;
+  DB.files={}; DB.sessions.forEach(s=>delete s.src); save(); render();
 }
 function savePlayer(){
   const g=id=>document.getElementById(id).value.trim();
@@ -2001,6 +2083,12 @@ DB=load();
 // open on whichever discipline was logged most recently
 (function(){const last=DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:1).pop();
   if(last)VIEWKIND=kindOf(last); if(VIEWKIND==='catching')TRENDK='avgPop'; LOGKIND=VIEWKIND;})();
+// parser moved on since this data was written? re-read the stored files
+if((DB.parserV||0)!==PARSER_V){
+  const n=backfillAll(); DB.parserV=PARSER_V;
+  if(n){DB.updatedAt=Date.now(); BACKFILLED=n}
+  saveLocal();
+}
 render();
 setSync(session?'saving':'local');
 startSync();
