@@ -4,10 +4,15 @@ Single-file web app (`index.html`) for tracking a hitter's development session o
 from HitTrax data. No install, no server needed — open the file, or run the local preview.
 
 ## Two ways to log a session
-1. **Paste batted balls** — copy the pitch-by-pitch rows out of HitTrax (CSV, a copied table,
-   or one ball per line). Columns are auto-detected: Velo / Exit Velocity, LA / Launch Angle,
-   Dist / Distance, Spray / Horiz Angle, Result / Play. Every summary metric is computed,
+1. **Upload the HitTrax CSV** (or drag it onto the drop zone) — .csv, .tsv or .txt. Title/player
+   rows above the real header are skipped, quoted fields and tab/comma/semicolon delimiters are
+   handled, and rows without a usable exit velo are reported and skipped. Pasting the rows into
+   the box works exactly the same way, including headerless "78.4 14 205" lines.
+   Columns are auto-detected: Velo / Exit Velocity, LA / Launch Angle, Dist / Distance,
+   Spray / Horiz Angle, Result / Play, Pitch Velo, Date. Every summary metric is computed,
    plus the LA-vs-EV scatter and the spray chart.
+   If the file covers several dates it offers to save one session per date (previewed in a table
+   before saving); pitch speed is averaged from the file when you leave that field blank.
 2. **Type the summary** — key in whatever the HitTrax session report screen shows.
 
 ## What it tracks
