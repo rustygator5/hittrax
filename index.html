@@ -526,15 +526,59 @@ function computeFromThrows(T){
 }
 function sessionStats(s){
   if(kindOf(s)==='catching'){
-    if(s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
+    if(s.mode!=='mixed'&&s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
     return s.summary||{};
   }
   if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,HH()); if(c)return c;}
   return s.summary||{};
 }
-const sorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
+const rawSorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
   .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
-const countOf=kind=>DB.sessions.filter(s=>kindOf(s)===kind).length;
+/* One day = one session. HitTrax writes a file per round, so a single trip to the cage can
+   arrive as several uploads; everything downstream works on day-sessions, with the individual
+   uploads kept underneath so they can still be inspected and deleted. */
+function daySessions(kind){
+  const by={};
+  rawSorted(kind).forEach(s=>{(by[s.date]=by[s.date]||[]).push(s)});
+  return Object.keys(by).sort().map(d=>dayOf(by[d],kind||VIEWKIND));
+}
+function dayOf(parts,kind){
+  const p0=parts[0];
+  if(parts.length===1)return Object.assign({},p0,{parts:[p0],dayId:p0.id});
+  const balls=parts.flatMap(s=>s.balls||[]), throws=parts.flatMap(s=>s.throws||[]);
+  const rows=kind==='catching'?throws:balls;
+  // only recompute from raw rows when EVERY round has them, else a typed round would vanish
+  const allRows=parts.every(s=>((kind==='catching'?s.throws:s.balls)||[]).length>0);
+  const day={id:'day:'+kind+':'+p0.date, dayId:'day:'+kind+':'+p0.date, parts, kind, date:p0.date,
+    mode:allRows?'detail':'mixed',
+    type:[...new Set(parts.map(s=>s.type).filter(Boolean))].join(' + '),
+    location:[...new Set(parts.map(s=>s.location).filter(Boolean))].join(', '),
+    notes:parts.map(s=>s.notes).filter(Boolean).join(' · '),
+    balls, throws};
+  // every upload has raw rows -> recompute exactly; otherwise fold the typed summaries together
+  day.summary=allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,HH()))
+                     :mergeSummaries(parts.map(sessionStats),kind);
+  const pitches=parts.map(s=>num(s.pitch)).filter(v=>v>0);
+  day.pitch=allRows?avgPitch(rows):(pitches.length?Math.round(pitches.reduce((a,c)=>a+c,0)/pitches.length):null);
+  return day;
+}
+// typed-summary rounds: sum the counts, keep the best best, weight the rest by round size
+function mergeSummaries(list,kind){
+  const out={}, wkey=kind==='catching'?'throws':'swings';
+  const SUM=['swings','throws','attempts','misfires','nothrows'];
+  (kind==='catching'?CM:M).forEach(m=>{
+    const vals=list.map(s=>({v:num(s[m.k]),w:num(s[wkey])||1})).filter(x=>x.v!=null);
+    if(!vals.length)return;
+    if(SUM.includes(m.k))out[m.k]=vals.reduce((a,c)=>a+c.v,0);
+    else if(m.dir==='up'&&/^(max|best|top)/i.test(m.k))out[m.k]=Math.max(...vals.map(x=>x.v));
+    else if(m.dir==='down'&&/^(best|top)/i.test(m.k))out[m.k]=Math.min(...vals.map(x=>x.v));
+    else out[m.k]=vals.reduce((a,c)=>a+c.v*c.w,0)/vals.reduce((a,c)=>a+c.w,0);
+  });
+  return out;
+}
+const sorted=(kind)=>daySessions(kind);
+const countOf=kind=>daySessions(kind).length;
+const findSession=id=>DB.sessions.find(s=>s.id===id)||sorted('hitting').concat(sorted('catching')).find(s=>s.id===id);
 function series(k){return sorted().map(s=>({date:s.date,id:s.id,v:num(sessionStats(s)[k])})).filter(p=>p.v!=null);}
 function num(v){return (v===''||v==null||isNaN(v))?null:+v;}
 function fmt(k,v){ if(v==null)return'—'; const m=MK[k]; const s=(+v).toFixed(m.d);
@@ -983,7 +1027,8 @@ function vDash(){
   return `
   <div class="card">
     <div class="row" style="align-items:baseline">
-      <div><h2>Latest session</h2><div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div></div>
+      <div><h2>Latest session${(last.parts&&last.parts.length>1)?` <span class="chip">${last.parts.length} rounds</span>`:''}</h2>
+        <div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div></div>
       <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${last.id}')">Details</button>
     </div>
     <div class="tiles">${tiles}</div>
@@ -1419,11 +1464,12 @@ function vSessions(){
    return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>`+
     cols.map((c,i)=>{const v=num(st[c[0]]);
       return `<td${i===1?' style="font-weight:700"':''}>${v==null?'—':(MK[c[0]].u==='%'?Math.round(v)+'%':fmt(c[0],v))}</td>`}).join('')+
-    `<td>${s.mode==='detail'?'<span class="chip">detail</span>':''}</td></tr>`}).join('')+
+    `<td>${(s.parts&&s.parts.length>1)?`<span class="chip">${s.parts.length} rounds</span>`
+      :(s.mode==='detail'?'<span class="chip">detail</span>':'')}</td></tr>`}).join('')+
   `</tbody></table></div></div>`;
 }
 function openSession(id){
-  const s=DB.sessions.find(x=>x.id===id); if(!s)return;
+  const s=findSession(id); if(!s)return;
   const st=sessionStats(s);
   document.getElementById('dlgTitle').textContent=s.date+(s.type?' · '+s.type:'');
   const tiles=KIND[kindOf(s)].metrics.filter(m=>num(st[m.k])!=null).map(m=>{const d=delta(m.k,id);
@@ -1452,13 +1498,20 @@ function openSession(id){
    ${balls.length?`<div style="margin-top:18px"><label>Batted balls (${balls.length})</label><div class="scroll" style="max-height:240px">
      <table class="mono"><thead><tr><th>#</th><th>EV</th><th>LA</th><th>Dist</th><th>Type</th><th>Result</th></tr></thead><tbody>`+
      balls.map((b,i)=>`<tr><td>${i+1}</td><td>${(+b.ev).toFixed(1)}</td><td>${b.la!=null?(+b.la).toFixed(0)+'°':'—'}</td>
-       <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${(bucket(b.la)||'—').toUpperCase()}</td><td>${esc(b.result||'—')}</td></tr>`).join('')+
+       <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${((b.btype||bucket(b.la))||'—').toUpperCase()}</td><td>${esc(b.result||'—')}</td></tr>`).join('')+
      `</tbody></table></div></div>`:''}
-   <div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')" style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`;
+   ${(s.parts&&s.parts.length>1)?`<div style="margin-top:18px"><label>${s.parts.length} rounds uploaded on this date</label>
+     <div class="scroll"><table><thead><tr><th>Round</th><th>${kindOf(s)==='catching'?'Throws':'Balls'}</th><th>Type</th><th></th></tr></thead><tbody>`+
+     s.parts.map((pt,i)=>{const n=((kindOf(s)==='catching'?pt.throws:pt.balls)||[]).length;
+       return `<tr><td>#${i+1}</td><td>${n||'—'}</td><td style="color:var(--dim)">${esc(pt.type||'')}</td>
+         <td><button class="btn ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:rgba(239,77,90,.4)"
+           onclick="delSession('${pt.id}')">Delete</button></td></tr>`}).join('')+
+     `</tbody></table></div></div>`
+   :`<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')" style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`}`;
   dlg.showModal();
 }
 function delSession(id){
-  if(!confirm('Delete this session? This cannot be undone.'))return;
+  if(!confirm('Delete this round? This cannot be undone.'))return;
   DB.sessions=DB.sessions.filter(s=>s.id!==id);
   DB.deleted.push({id,ts:Date.now()});      // tombstone, so the delete syncs instead of the row coming back
   save(); dlg.close(); render();

@@ -15,6 +15,17 @@ from HitTrax data. No install, no server needed — open the file, or run the lo
    before saving); pitch speed is averaged from the file when you leave that field blank.
 2. **Type the summary** — key in whatever the HitTrax session report screen shows.
 
+## One day = one session
+HitTrax writes a file per round, so a single trip to the cage can arrive as two or three uploads.
+Anything logged on the same date (within the same discipline) is grouped into one session
+everywhere - dashboard, trends, personal bests, report - so a day counts once instead of showing
+up as several half-rounds. The rounds are kept underneath: open the session and each upload is
+listed with its own ball/throw count and its own delete button.
+
+When every round of the day has raw rows, the day's numbers are recomputed from the pooled rows,
+so they are exact. If one round was typed in as a summary instead, counts are summed, bests take
+the best, and averages are weighted by round size.
+
 ## Two disciplines
 A **Hitting / Catching** switch sits under the tabs (it appears once a catching session exists).
 Each discipline keeps its own sessions, trends, personal bests, benchmarks and report.
