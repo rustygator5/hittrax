@@ -58,6 +58,25 @@ When every round of the day has raw rows, the day's numbers are recomputed from 
 so they are exact. If one round was typed in as a summary instead, counts are summed, bests take
 the best, and averages are weighted by round size.
 
+## Bat speed (estimated)
+Exit velo depends on how fast the pitch arrives, so a front-toss round and a machine round can't be
+compared directly. Bat speed takes the pitch out: a batted ball's speed is roughly
+q x pitch speed + (1 + q) x bat speed (Alan Nathan's collision model), so each ball is turned back
+into a bat speed using its own pitch speed, and the hardest-hit quarter is averaged - a mishit
+transfers less and would understate the swing.
+
+q is the bat's collision efficiency: 0.20 for wood and BBCOR (the default, and the safe choice if
+unsure), about 0.24 for hot youth barrels - set it under Player & Data -> Bat. Like the hard-hit
+line, it is frozen on each session at save time, so switching bats changes new sessions only
+(re-scoring the old ones is an explicit choice). Because q is constant session to session, the
+change in this number is real even if the absolute value is a few mph off.
+
+The dashboard card shows it against Blast Motion's sensor ranges for the age group (a different
+measurement, there for context), and when a day has rounds off different feeds it compares them:
+on 10/4 he swung 44.0 mph against the 35 mph machine and 38.8 against 21 mph front toss - the
+slower pitch explained only 2.8 of the 8.9 mph exit-velo gap. "What's moving" also tests exit velo
+with every ball moved to a common pitch speed, which separates the swing from the feed.
+
 ## How progress is judged
 A single session is too small to read on its own: at 16 swings, his exit velo has a standard
 error of about 2 mph, so two sessions need to differ by roughly 6 mph before the gap means

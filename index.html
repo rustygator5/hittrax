@@ -228,6 +228,7 @@ function sanitizeSession(s){
   const grp=oneOf(s.group,['in','solo','out']); if(grp)o.group=grp;
   const pitch=finite(s.pitch); if(pitch!==undefined)o.pitch=pitch;
   const hh=finite(s.hh); if(hh!==undefined&&hh>10&&hh<150)o.hh=hh;
+  const bq=finite(s.bq); if(bq!==undefined&&bq>0.1&&bq<0.35)o.bq=bq;
   if(Array.isArray(s.balls))o.balls=s.balls.slice(0,5000).map(cleanBall).filter(Boolean);
   if(Array.isArray(s.throws))o.throws=s.throws.slice(0,5000).map(cleanThrow).filter(Boolean);
   if(s.src&&SAFE_ID.test(s.src.f||''))o.src={f:s.src.f,date:SAFE_DATE.test(s.src.date||'')?s.src.date:null};
@@ -239,6 +240,7 @@ function sanitizeSettings(set){
   const hh=finite(set.hardHit); if(hh!==undefined&&hh>10&&hh<150)o.hardHit=hh;
   if(set.hardHit===null)o.hardHit=null;
   const zc=oneOf(set.zoneCal,['none','mirror','left','right']); if(zc)o.zoneCal=zc;
+  const bq=finite(set.batQ); if(bq!==undefined&&bq>0.1&&bq<0.35)o.batQ=bq;
   return o;
 }
 function sanitizeDoc(d){
@@ -566,9 +568,36 @@ const POPBENCH=[
 function popBench(age){age=+age; if(!age)return null; return POPBENCH.find(b=>age>=b.min&&age<=b.max)||null;}
 const ON_TARGET_IN=24;   // a throw landing within 2 ft of the bag counts as on target
 function HH(){return +(DB.settings.hardHit||hardHitDefault(DB.player.age));}
+/* Bat speed, worked backwards from the collision: exit velo ≈ q·pitch + (1+q)·bat speed
+   (Alan Nathan). q is the bat's collision efficiency — about 0.20 for wood and BBCOR, a little
+   higher for hot youth barrels. Whatever q is, it is the same from session to session, so the
+   CHANGE in this number is real even where the absolute value is a few mph off. */
+function Q(){const q=+DB.settings.batQ; return (q>0.1&&q<0.35)?q:0.20}
+// Blast Motion sensor ranges (practice / tee / toss swings) — a different measurement, for context
+const BATBENCH=[
+ {label:'8–10',min:8,max:10,lo:30,hi:45},{label:'11–12',min:11,max:12,lo:40,hi:52},
+ {label:'13–14',min:13,max:14,lo:46,hi:62},{label:'15–16',min:15,max:16,lo:55,hi:65},
+ {label:'17–18',min:17,max:18,lo:60,hi:70},{label:'College',min:19,max:22,lo:65,hi:75},
+ {label:'Pro',min:23,max:99,lo:66,hi:78}];
+const batBench=age=>{age=+age; return age?BATBENCH.find(b=>age>=b.min&&age<=b.max)||null:null};
+// one estimate per ball; the session figure is the top quarter (squared-up contact — a mishit
+// transfers less, so averaging every ball would understate the swing)
+function batEstimates(balls,q,pitchFallback){
+  q=q||Q();
+  return balls.filter(x=>num(x.ev)>0)
+    .map(x=>{const p=num(x.pitch)>0?+x.pitch:(num(pitchFallback)>0?+pitchFallback:null);
+      return p==null?null:(+x.ev-q*p)/(1+q)})
+    .filter(v=>v!=null).sort((a,b)=>b-a);
+}
+function batSpeedOf(balls,q,pitchFallback){
+  const e=batEstimates(balls,q,pitchFallback); if(e.length<4)return null;
+  const top=e.slice(0,Math.max(1,Math.round(e.length*0.25)));
+  return top.reduce((a,c)=>a+c,0)/top.length;
+}
 
 /* ============================== metric definitions ============================== */
 const M=[
+ {k:'batSpeed',n:'Bat Speed (est.)', u:'mph', d:1, dir:'up'},
  {k:'maxEV',   n:'Max Exit Velo',      u:'mph', d:1, dir:'up'},
  {k:'avgEV',   n:'Avg Exit Velo',      u:'mph', d:1, dir:'up'},
  {k:'topEV',   n:'Top-25% Avg EV',     u:'mph', d:1, dir:'up'},
@@ -631,8 +660,9 @@ const GM=[
  {k:'ab',   n:'At-Bats',         u:'', d:0, dir:'flat'},
 ];
 const MK=Object.fromEntries(M.concat(CM).concat(GM).map(m=>[m.k,m]));
-const CORE=['maxEV','avgEV','hha','sweet','ld','avgLA'];
+const CORE=['batSpeed','maxEV','avgEV','hha','sweet','ld','avgLA'];
 const CCORE=['bestPop','avgPop','avgExch','maxVelo','cleanPct','outPct'];
+MK.adjEV={k:'adjEV',n:'Exit velo, pitch-adjusted',u:'mph',d:1,dir:'up'};   // panel-only measure
 const GCORE=['avg','obp','ops','h','rbi','kPct'];
 const TRENDDEF={hitting:'maxEV',catching:'avgPop',games:'ops'};
 const KIND={hitting:{label:'Hitting',icon:'⚾',metrics:M,core:CORE,unit:'balls in play'},
@@ -648,7 +678,7 @@ let VIEWKIND='hitting';
 // Launch-angle buckets (HitTrax-style): GB <10, LD 10–25, FB 25–50, PU >50
 function bucket(la){ if(la==null||isNaN(la))return null; if(la<10)return'gb'; if(la<=25)return'ld'; if(la<=50)return'fb'; return'pu'; }
 const HITVAL={out:0,single:1,double:2,triple:3,hr:4,foul:null,error:0};
-function computeFromBalls(balls,hh){
+function computeFromBalls(balls,hh,bq,pitchFallback){
   const b=balls.filter(x=>x.ev!=null&&!isNaN(x.ev)&&x.ev>0);
   if(!b.length) return null;
   const evs=b.map(x=>+x.ev).sort((p,q)=>q-p);
@@ -663,6 +693,7 @@ function computeFromBalls(balls,hh){
   const barrel=b.filter(x=>+x.ev>=hh && x.la!=null && +x.la>=8 && +x.la<=32).length;
   const sweet=las.filter(v=>v>=8&&v<=32).length;
   const s={
+    batSpeed:batSpeedOf(b,bq,pitchFallback),
     swings:n,
     maxEV:evs[0],
     avgEV:evs.reduce((a,c)=>a+c,0)/n,
@@ -741,7 +772,7 @@ function sessionStats(s){
     if(s.mode!=='mixed'&&s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
     return s.summary||{};
   }
-  if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,s.hh||HH()); if(c)return c;}
+  if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,s.hh||HH(),s.bq||Q(),s.pitch); if(c)return c;}
   return s.summary||{};
 }
 const rawSorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
@@ -797,7 +828,7 @@ function dayOf(parts,kind){
     balls, throws};
   // every upload has raw rows -> recompute exactly; otherwise fold the typed summaries together
   day.summary=kind==='games'?sumGames(parts.map(sessionStats))
-    :(allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,dayHH(parts)))
+    :(allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,dayHH(parts),(parts.find(x=>x.bq)||{}).bq||Q()))
              :mergeSummaries(parts.map(sessionStats),kind));
   const pitches=parts.map(s=>num(s.pitch)).filter(v=>v>0);
   day.pitch=allRows?avgPitch(rows):(pitches.length?Math.round(pitches.reduce((a,c)=>a+c,0)/pitches.length):null);
@@ -2148,6 +2179,7 @@ function vDash(){
     ${cat?popSplit(st):''}
   </div>
   ${gm?seasonCard(S)+cageVsGameCard():''}
+  ${(cat||gm)?'':batCard(last)}
   ${gm?'':(b?(cat?popBenchCard(st,b):benchCard(st,b)):'')}
   ${(cat||gm)?'':gapsCard(last.balls,last)}
   ${(cat||gm)?'':outcomeCard(last.balls||[],'for '+last.date)}
@@ -2159,6 +2191,7 @@ function vDash(){
   ${cat?throwBarsCard(last.throws||[]):''}
   ${(cat||gm)?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
+  ${(()=>{if(VIEWKIND==='hitting'&&series('batSpeed').length>=2)TRENDDEF.hitting='batSpeed';else if(VIEWKIND==='hitting')TRENDDEF.hitting='maxEV';return''})()}
   <div class="card"><h2>${MK[TRENDDEF[VIEWKIND]].n} ${gm?'— season to date':'trend'}</h2>
     <div class="hint">${gm?'Season line after each game — one game is too few plate appearances to read on its own'
       :'Each dot is a session, sized by how many balls it holds · dashed blue = rolling average weighted by sample size'}</div>
@@ -2168,6 +2201,60 @@ function vDash(){
   ${pbCard()}`;
 }
 // where the pop time actually goes: glove-to-hand exchange vs. ball flight
+/* ---------- bat speed card ---------- */
+function batCard(last){
+  const st=sessionStats(last), v=num(st.batSpeed);
+  if(v==null)return'';
+  const b=batBench(DB.player.age), q=last.bq||Q();
+  // compare the rounds of the latest date when they came off different feeds
+  const rounds=roundsOfDate(last).filter(r=>dispo(r)!=='out'&&(r.balls||[]).length);
+  const rows=rounds.map(r=>{const s=sessionStats(r);
+    return {r,pitch:num(r.pitch),top:num(s.topEV),bat:num(s.batSpeed),n:(r.balls||[]).length}})
+    .filter(x=>x.bat!=null&&x.pitch!=null);
+  let compare='';
+  if(rows.length>=2){
+    const ps=rows.map(x=>x.pitch), spread=Math.max(...ps)-Math.min(...ps);
+    if(spread>=5){
+      const fast=rows.reduce((a,c)=>c.pitch>a.pitch?c:a), slow=rows.reduce((a,c)=>c.pitch<a.pitch?c:a);
+      const gap=fast.bat-slow.bat, evGap=(fast.top||0)-(slow.top||0), fromPitch=q*(fast.pitch-slow.pitch);
+      let read='';
+      if(Math.abs(gap)>=3)read=gap>0
+        ?`He swings about <b>${gap.toFixed(1)} mph slower</b> against the ${Math.round(slow.pitch)} mph feed. The slower pitch only accounts for ~${fromPitch.toFixed(1)} mph of the ${evGap.toFixed(1)} mph exit-velo gap — the rest is the swing, which usually means he's decelerating to time a slow ball.`
+        :`He actually swings about <b>${Math.abs(gap).toFixed(1)} mph faster</b> against the ${Math.round(slow.pitch)} mph feed — the slower pitch is costing exit velo, not bat speed.`;
+      else read=`Bat speed holds within ${Math.abs(gap).toFixed(1)} mph across the feeds — the exit-velo difference between rounds is mostly the pitch speed itself.`;
+      compare=`<div style="margin-top:14px"><label>Rounds on ${esc(last.date)}, adjusted for the feed</label>
+        <div class="scroll"><table><thead><tr><th>Round</th><th>Pitch</th><th>Top-25% EV</th><th>Bat speed (est.)</th></tr></thead><tbody>`+
+        rows.map((x,i)=>`<tr><td>#${i+1}${x.n<MIN_N.hitting?' <span class="chip" style="font-size:9px">small</span>':''}</td>
+          <td>${Math.round(x.pitch)} mph</td><td>${fmt('topEV',x.top)}</td><td style="font-weight:800">${x.bat.toFixed(1)} mph</td></tr>`).join('')+
+        `</tbody></table></div><div class="hint" style="margin-top:6px">${read}</div></div>`;
+    }
+  }
+  let band='';
+  if(b){
+    const lo=Math.max(15,b.lo-12), hi=Math.max(b.hi+8,v+4), pct=x=>Math.max(0,Math.min(100,(x-lo)/(hi-lo)*100));
+    band=`<div style="position:relative;height:50px;margin-top:10px">
+      <div style="position:absolute;top:16px;left:0;right:0;height:12px;border-radius:99px;background:var(--bg2);border:1px solid var(--line);overflow:hidden">
+        <div style="position:absolute;left:${pct(b.lo)}%;width:${pct(b.hi)-pct(b.lo)}%;top:0;bottom:0;background:rgba(61,109,240,.45)"></div></div>
+      <div style="position:absolute;left:${pct(v)}%;top:6px;transform:translateX(-50%);text-align:center">
+        <div style="width:3px;height:30px;background:var(--orange);margin:0 auto;border-radius:2px"></div>
+        <div style="font-size:12px;font-weight:800;color:var(--orange)">${v.toFixed(1)}</div></div></div>
+      <div class="legend" style="margin-top:12px"><span><i style="background:rgba(61,109,240,.6)"></i>Typical ${b.label}: ${b.lo}–${b.hi} mph (Blast Motion sensor, practice swings)</span></div>`;
+  }
+  return `<div class="card"><div class="row" style="align-items:baseline">
+      <div><h2>Bat speed <span class="chip">estimated</span></h2>
+      <div class="hint">Exit velo with the pitch speed taken out — so a front-toss day and a machine day can finally be compared</div></div>
+      <div style="margin-left:auto;text-align:right"><div style="font-size:30px;font-weight:800;letter-spacing:-.03em">${v.toFixed(1)}<small style="font-size:13px;color:var(--dim)"> mph</small></div>
+      <div class="hint">${esc(last.date)}</div></div></div>
+    ${band}${compare}
+    <details style="margin-top:12px"><summary class="hint" style="cursor:pointer">How this is worked out</summary>
+      <div class="hint" style="margin-top:6px">A batted ball's speed is roughly <b>${q.toFixed(2)} × pitch speed + ${(1+q).toFixed(2)} × bat speed</b>
+        (Alan Nathan's collision model). Each ball is turned back into a bat speed using its own pitch speed, and the hardest-hit
+        quarter is averaged, because a mishit transfers less and would understate the swing. The ${q.toFixed(2)} depends on the bat —
+        set it under Player &amp; Data → Bat — but it's the same every session, so changes in this number are real even if the
+        absolute value is a few mph off. Not directly comparable to a Blast sensor, which measures the barrel itself.</div></details>
+  </div>`;
+}
+
 function popSplit(st){
   const pop=num(st.avgPop), ex=num(st.avgExch);
   if(pop==null||ex==null||ex>=pop)return'';
@@ -2297,6 +2384,10 @@ function movingTests(kind){
   if(kind==='hitting'){
     const la=x=>num(x.la), type=x=>x.btype||bucket(x.la);
     mean('avgEV','Avg exit velo',x=>num(x.ev),'up');
+    // same balls, each moved to a common pitch speed — separates the swing from the feed
+    const ps=prior.concat(recent).map(x=>num(x.pitch)).filter(v=>v>0).sort((a,b)=>a-b);
+    if(ps.length>=10){const pRef=ps[Math.floor(ps.length/2)], q=Q();
+      mean('adjEV',`Exit velo at a ${Math.round(pRef)} mph pitch`,x=>num(x.pitch)>0?+x.ev-q*(+x.pitch-pRef):null,'up');}
     prop('hha','Hard-hit rate',()=>true,x=>+x.ev>=x._hh,'up');
     prop('sweet','Sweet-spot rate',x=>la(x)!=null,x=>la(x)>=8&&la(x)<=32,'up');
     prop('ld','Line-drive rate',x=>type(x),x=>type(x)==='ld','up');
@@ -2643,7 +2734,7 @@ function backfillSession(s){
   if(!rows.length||(had&&Math.abs(rows.length-had)>Math.max(2,had*0.1)))return false;  // not the same round
   const before=JSON.stringify(cat?s.throws:s.balls);
   if(cat){s.throws=rows; s.summary=computeFromThrows(rows)}
-  else{s.balls=rows; s.summary=computeFromBalls(rows,s.hh||HH())}
+  else{s.balls=rows; s.summary=computeFromBalls(rows,s.hh||HH(),s.bq||Q(),s.pitch)}
   const ap=avgPitch(rows); if(ap!=null)s.pitch=ap;
   const changed=JSON.stringify(cat?s.throws:s.balls)!==before;
   if(changed)s.mtime=Date.now();
@@ -2659,7 +2750,7 @@ function saveSession(){
   const pitchEl=g('f_pitch');
   const s={id:uid(),kind:LOGKIND,date:g('f_date').value,type:g('f_type').value,pitch:pitchEl?num(pitchEl.value):null,
     location:g('f_loc').value.trim(),notes:g('f_notes').value.trim(),mode:LOGMODE};
-  if(LOGKIND==='hitting')s.hh=HH();        // frozen: a birthday must not re-score this session later
+  if(LOGKIND==='hitting'){s.hh=HH(); s.bq=Q();}   // frozen: a birthday or a new bat must not re-score this session
   if(!s.date){alert('Pick a date.');return}
   const pack=(rows)=>Object.assign(cat?{throws:rows,summary:computeFromThrows(rows)}
                         :{balls:rows,summary:computeFromBalls(rows,HH())},{pitch:avgPitch(rows)});
@@ -2868,7 +2959,7 @@ function roundsTable(s,id){
   if(rounds.length<2)
     return `<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${esc(id)}')"
       style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`;
-  const head=cat?['Round','Throws','Pitch in','Avg pop']:['Round','Balls','Avg pitch','Avg EV'];
+  const head=cat?['Round','Throws','Pitch in','Avg pop']:['Round','Balls','Avg pitch','Avg EV','Bat speed'];
   return `<div style="margin-top:18px"><label>${rounds.length} rounds logged on ${esc(s.date)}</label>
     <div class="hint" style="margin:-4px 0 8px">Different pitcher or machine setting? Keep that round separate so its
       numbers don't average into the rest of the day — or drop it out of the totals entirely.</div>
@@ -2882,6 +2973,7 @@ function roundsTable(s,id){
         <td>${n||'—'}</td>
         <td>${pt.pitch!=null?Math.round(pt.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>
         <td style="font-weight:700">${fmt(ks[0],num(st[ks[0]]))}</td>
+        ${cat?'':`<td>${num(st.batSpeed)!=null?num(st.batSpeed).toFixed(1)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>`}
         <td>${typeSelect(pt,true)}</td>
         <td><select class="inline sm" onchange="setGroup('${esc(pt.id)}',this.value)">
           ${Object.keys(GROUPS).map(g=>`<option value="${g}"${g===d?' selected':''}>${GROUPS[g]}</option>`).join('')}
@@ -2954,6 +3046,10 @@ function vData(){
      <div><label>Level / team</label><input id="p_level" value="${esc(p.level||'')}" placeholder="e.g. 12U travel"></div>
      <div><label>Bats</label><select id="p_bats"><option ${p.bats==='R'?'selected':''}>R</option><option ${p.bats==='L'?'selected':''}>L</option><option ${p.bats==='S'?'selected':''}>S</option></select></div>
      <div><label>Hard-hit threshold (mph)</label><input id="p_hh" type="number" value="${esc(DB.settings.hardHit||'')}" placeholder="auto: ${hardHitDefault(p.age)}"></div>
+     <div><label>Bat</label><select id="p_batq">
+       ${[[0.20,'Wood / BBCOR — or not sure'],[0.24,'Youth aluminum or composite (USSSA / USA)']]
+         .map(o=>`<option value="${o[0]}"${Math.abs(Q()-o[0])<0.005?' selected':''}>${o[1]}</option>`).join('')}
+     </select></div>
      <div><label>Strike-zone calibration</label><select id="p_zcal">
        ${[['none','Use HitTrax zones as exported'],['mirror','Mirror left ↔ right'],
           ['left','Shift one column left'],['right','Shift one column right']]
@@ -3019,6 +3115,16 @@ function savePlayer(){
   DB.player={name:g('p_name'),age:g('p_age'),level:g('p_level'),bats:document.getElementById('p_bats').value};
   const hh=num(g('p_hh')); DB.settings.hardHit=hh||null;
   const zc=document.getElementById('p_zcal'); if(zc)DB.settings.zoneCal=zc.value;
+  const qBefore=Q(); const bqEl=document.getElementById('p_batq'); if(bqEl)DB.settings.batQ=+bqEl.value;
+  const qAfter=Q();
+  const bqLogged=DB.sessions.filter(s=>kindOf(s)==='hitting'&&s.bq&&Math.abs(s.bq-qAfter)>0.001);
+  if(Math.abs(qAfter-qBefore)>0.001&&bqLogged.length&&
+     confirm(`Bat setting changed. Re-estimate bat speed on your ${bqLogged.length} earlier session${bqLogged.length>1?'s':''} with the new bat too?
+
+OK = re-estimate everything (right if the old setting was simply wrong).
+Cancel = keep earlier sessions as logged (right if he has switched bats).`)){
+    const now=Date.now(); bqLogged.forEach((s,i)=>{s.bq=qAfter;s.mtime=now+i});
+  }
   const after=HH();
   const logged=DB.sessions.filter(s=>kindOf(s)==='hitting'&&s.hh&&s.hh!==after);
   if(after!==before&&logged.length){
@@ -3076,7 +3182,8 @@ if(!session)try{EXPIRED=!!localStorage.getItem(DEADTOK)}catch(e){}
 DB=load();
 // sessions from before thresholds were frozen: pin them at today's threshold, so the next age
 // change can't silently rewrite their hard-hit numbers
-(function(){let n=0; DB.sessions.forEach(s=>{if(kindOf(s)==='hitting'&&!s.hh){s.hh=HH();n++}}); if(n)saveLocal();})();
+(function(){let n=0; DB.sessions.forEach(s=>{if(kindOf(s)!=='hitting')return;
+  if(!s.hh){s.hh=HH();n++} if(!s.bq){s.bq=Q();n++}}); if(n)saveLocal();})();
 // open on whichever discipline was logged most recently
 (function(){const last=DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:1).pop();
   if(last)VIEWKIND=kindOf(last); TRENDK=TRENDDEF[VIEWKIND]; LOGKIND=VIEWKIND;})();
