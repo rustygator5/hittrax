@@ -96,19 +96,31 @@ A single session is too small to read on its own: at 16 swings, his exit velo ha
 error of about 2 mph, so two sessions need to differ by roughly 6 mph before the gap means
 anything. So:
 
-- **What's moving** pools the actual batted balls (or clean throws, or plate appearances), compares
-  the most recent window with the one before it, and only calls a change when it clears a 95% bar
-  (Welch test for averages, two-proportion test for rates). Everything else is listed as "inside the
-  noise" with how big a change it would take to count. With too little data it says so rather than
-  guessing.
+- **Visits, not balls, are the unit of evidence.** Balls from one trip to the cage share that day's
+  feed, warm-up and energy, so 60 balls from two visits carry far less information than 60
+  independent ones. Every comparison groups rows by visit and uses the larger of the ball-to-ball
+  variance and the visit-to-visit (cluster-robust) variance, with a t critical value on the number
+  of visits. A side needs balls from at least two visits before anything is called - one visit can't
+  separate a good day from a better swing. (A single hot day that a ball-by-ball test would call
+  "real" stays inside the noise here; there's a regression check for exactly that.)
+- **What's moving** compares the latest visits with the ones before (each side capped at half the
+  visits) and labels a change **Improving / Slipping** only once it has held for two looks in a row:
+  significant now, and significant in the same direction before the latest visit was added. A change
+  clearing the bar for the first time shows as **Emerging**. Re-testing seven measures after every
+  session would otherwise produce a false "improving" every few weeks by chance. Games use the same
+  test on game-by-game lines (AVG, K%, BB%).
+- **Trends and the Report** compare a *start* window (the first visits) with a *now* window (the
+  latest), never two single sessions, and say for each measure whether the change is real, inside
+  the noise, or untested (maxes are single balls; top-quarter averages have no clean error bar).
+  Typed-summary sessions without ball rows fall back to first vs latest and say so.
 - **Trends** size each dot by its sample, hollow when too small to trust, and the rolling average
   is weighted by sample size so a 5-ball session can't swing it.
 - **Rolling by ball** (a toggle on Trends) ignores sessions entirely and walks through every batted
   ball or clean throw in order: each point is the last N, drawn with its 95% band (a t-interval for
   averages, a Wilson interval for rates) against a strip showing where he started. The window
   defaults to the biggest that leaves two non-overlapping windows, and the readout tests the first
-  window against the latest one - "Real improvement", "Not yet distinguishable", or how many more
-  balls it needs. Covers exit velo, exit velo at a common pitch speed, bat speed, hard-hit,
+  window against the latest one, visit by visit - "Real improvement", "Not yet distinguishable", or how
+  many more balls it needs. Covers exit velo, exit velo at a common pitch speed, bat speed, hard-hit,
   sweet-spot, line-drive and ground-ball rates and launch angle; pop time, exchange, arm strength
   and projected outs for catching.
 - **Personal bests** for averages and rates need a minimum sample (10 balls, 8 throws); single-event
@@ -118,6 +130,18 @@ anything. So:
 - **Hard-hit is frozen per session** at the threshold in force when it was logged, so changing his
   age (or the threshold) never silently re-scores history. Re-scoring everything is an explicit
   choice offered when the threshold changes.
+
+## Sensor misreads
+HitTrax occasionally mis-tracks a ball, and one 96 mph reading would otherwise become a permanent
+max, an "Elite" tag and a trend spike. A reading above Tukey's fence on his own exit velos (third
+quartile + 1.5 x IQR, plus 5 mph of slack, once he has 30+ balls), above his age group's elite mark
++ 20 mph, or with a launch angle beyond ±90° is held out of every stat and best. The hitting dashboard
+lists them with an **It was real - count it** button, which is saved with the session.
+
+## Coach's read thresholds
+Game reads wait for 25 plate appearances (1 K in 9 PA could be a true rate anywhere from 2% to 43%)
+and cage-vs-game flips for 15 balls in play. Cage flags sit past big-league norms rather than at
+them: under 35% in the 8-32° window (MLB about a third) and 50%+ ground balls (MLB about 43%).
 
 ## Data hygiene
 Every way data enters - import links, backup files, the cloud, and local storage - is rebuilt from
@@ -325,7 +349,7 @@ python -m http.server 8776 --directory "C:/Users/user/Documents/HitTrax"
 
 ## Regression tests
 Open `tests.html` (locally at http://localhost:8776/tests.html, or `/hittrax/tests.html` on the live site) — the tab
-title reads `✓ 96/96` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
+title reads `✓ 113/113` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
 key (`hittrax.test.v1`), never signs in, never syncs and ignores `#add=` links, and it deletes that key when done, so
 it's safe on a device holding real data. The fixtures are synthetic but use HitTrax's exact export headers; every
 expected number is worked out by hand in the comments. Covers the parsers (dates, decimal commas, scorebook results,

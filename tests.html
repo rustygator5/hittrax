@@ -129,14 +129,60 @@ function tests(){
   check('Statistics','Welch test calls a clear difference',run(`testMean([40,41,39,40,42,38,40,41],[50,51,49,50,52,48,50,51]).sig`));
   check('Statistics','Welch test ignores identical samples',!run(`(r=>r&&r.sig)(testMean([40,41,39,40,42,38],[40,41,39,40,42,38]))`));
   check('Statistics','two-proportion test needs a real gap',!run(`(r=>r&&r.sig)(testProp(8,16,9,16))`));
-  // what's moving, end to end on constructed sessions
+  // visits, not balls, are the unit of evidence
+  /* [[1,2,3],[4,5,6]]: mean 3.5; ball-by-ball variance of the mean 17.5/5/6 = 0.583;
+     visit residual sums -4.5 and +4.5 -> 40.5/36 x 2/1 = 2.25 */
+  run(`__cm=clusterMean([[1,2,3],[4,5,6]]);`);
+  eq('Visits','clustered variance of the mean',run(`__cm.cr`),2.25,1e-9);
+  eq('Visits','ball-by-ball variance of the mean',run(`__cm.iid`),17.5/5/6,1e-9);
+  eq('Visits','the larger of the two is used',run(`__cm.v`),2.25,1e-9);
+  // helper: n visits, 15 balls each, a week apart, at the given base exit velo (±2 wobble)
+  const VISITS=(list)=>`DB.sessions=[${list.map((b,i)=>`{id:'v${i}',kind:'hitting',date:'2026-0'+(7+Math.floor(${i}/28))+'-'+String(1+${i}%28).padStart(2,'0'),mode:'detail',mtime:${i},hh:55,bq:0.2,summary:{},
+     balls:Array.from({length:15},(_,j)=>({ev:${b}+(j%2?2:-2),la:15,pitch:30}))}`).join(',')}];`;
+  const avgEVtest=()=>run(`(m=>m.tests?m.tests.find(t=>t.k==='avgEV'):m)(movingTests('hitting'))`);
+  fresh(); run(VISITS([40,50]));
+  check('Visits','one visit a side is never called, however big the gap',(t=>t&&t.few&&!t.sig)(avgEVtest()));
+  fresh(); run(VISITS([40,40,40,40,50,50,50,50]));
+  check('Visits','a 10 mph gain over four visits a side is real and confirmed',(t=>t&&t.sig&&t.confirmed)(avgEVtest()));
+  fresh(); run(VISITS([40,40,40,40,40,40,40,52]));
+  /* one hot day: recent visits 40,40,40,52. Ball by ball the 3 mph gap clears ~±1.4; visit by visit
+     the hot day's residual (+9 x 15) dominates: v = (3x45² + 135²)/60² x 4/3 = 9.0, need 2.45 x 3.0 = 7.4 */
+  check('Visits','one hot day doesn’t make a change real',(t=>t&&!t.sig)(avgEVtest()));
+  check('Visits','…though a ball-by-ball test would have called it',
+    run(`testMean(DB.sessions.slice(0,4).flatMap(s=>s.balls.map(b=>b.ev)),DB.sessions.slice(4,8).flatMap(s=>s.balls.map(b=>b.ev))).sig`));
+  fresh(); run(VISITS([40,40,50,50]));
+  /* full data: last 2 visits vs the 2 before -> called. One visit ago (3 visits) each side has a single
+     visit, so it couldn't be called then -> "emerging", not yet confirmed */
+  check('Visits','a change seen for the first time is emerging, not confirmed',(t=>t&&t.sig&&!t.confirmed)(avgEVtest()));
+  fresh(); run(VISITS([40,40,40,40,50,50,50,50]));
+  run(`__pr=progressRows('hitting');`);
+  eq('Visits','report: avg exit velo start → now is real',run(`__pr.rows.find(r=>r.m.k==='avgEV').read`),'real — better');
+  eq('Visits','report: a max is a single ball, not tested',run(`__pr.rows.find(r=>r.m.k==='maxEV').read`),'single best — not tested');
+  // start and now each aim for a third of the balls: 120/3 = 40 -> three 15-ball visits each
+  check('Visits','report label names the visits compared',/first 3 visits/.test(run(`__pr.label`))&&/last 3 visits/.test(run(`__pr.label`)));
+  fresh(); run(VISITS([40,50]));
+  check('Visits','rolling verdict needs two visits each side',run(`(V=>V.r&&V.r.few)(rollVerdict(rollMetrics('hitting',rollRows('hitting'))[0],15,rollRows('hitting')))`));
+
+  // sensor misreads
   fresh();
-  run(`(function(){const mk=(d,base)=>({id:uid(),kind:'hitting',date:d,mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},
-     balls:Array.from({length:30},(_,i)=>({ev:base+(i%2?2:-2),la:15,pitch:30}))});
-     DB.sessions=[mk('2026-09-01',40),mk('2026-09-08',50)];})();`);
-  check('Statistics','What’s moving calls a 10 mph gain on 30+30 balls',run(`movingTests('hitting').tests.find(t=>t.k==='avgEV').sig`));
-  run(`DB.sessions[1].balls.forEach(b=>b.ev=b.ev-10);`);
-  check('Statistics','What’s moving stays quiet when nothing changed',!run(`movingTests('hitting').tests.find(t=>t.k==='avgEV').sig`));
+  /* 40 balls at 40..60 (i%21): Q1 45, Q3 55 -> fence 55 + 1.5x10 + 5 = 75 (age cap 73+20 = 93) */
+  run(`DB.sessions=[{id:'m1',kind:'hitting',date:'2026-09-01',mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},
+     balls:Array.from({length:40},(_,i)=>({ev:40+(i%21),la:15,pitch:30})).concat([{ev:96.4,la:20,pitch:30},{ev:50,la:120,pitch:30}])}];
+     flagSuspects();`);
+  eq('Misreads','a 96 mph reading and a 120° angle are held out',run(`SUSLIST.map(x=>x.j).join(',')`),'40,41');
+  eq('Misreads','max exit velo ignores the misread',run(`sessionStats(DB.sessions[0]).maxEV`),60);
+  eq('Misreads','…and it isn’t a ball in play',run(`sessionStats(DB.sessions[0]).swings`),40);
+  run(`DB.sessions[0].okBalls=[40]; flagSuspects();`);
+  eq('Misreads','confirmed as real, it counts',run(`sessionStats(DB.sessions[0]).maxEV`),96.4);
+  eq('Misreads','the confirmation survives the sanitizer',run(`sanitizeSession(DB.sessions[0]).okBalls`),[40]);
+  run(`SUS=new WeakSet(); SUSLIST=[];`);
+
+  // coach's read waits for a real game sample
+  fresh();
+  run(`DB.sessions=[{id:'q1',kind:'games',date:'2026-10-05',type:'Season to date',mode:'game',mtime:1,summary:{gp:4,pa:9,ab:7,h:3,bb:2,k:1}}];`);
+  check('Thresholds','1 K in 9 PA is not "puts the ball in play"',!/Puts the ball in play/.test(run(`coachSummaryCard()`)));
+  run(`DB.sessions[0].summary={gp:8,pa:30,ab:26,h:9,bb:3,k:3};`);
+  check('Thresholds','3 K in 30 PA is',/Puts the ball in play/.test(run(`coachSummaryCard()`)));
 
   // frozen thresholds
   fresh();

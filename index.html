@@ -166,7 +166,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.7';
+const APP_BUILD='2026.10.05.8';
 // ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
 // so the regression suite can run on the same device as real data without touching it
 const TEST=/[?&]test=1(&|$)/.test(location.search);
@@ -238,6 +238,7 @@ function sanitizeSession(s){
   const bq=finite(s.bq); if(bq!==undefined&&bq>0.1&&bq<0.35)o.bq=bq;
   if(Array.isArray(s.balls))o.balls=s.balls.slice(0,5000).map(cleanBall).filter(Boolean);
   if(Array.isArray(s.throws))o.throws=s.throws.slice(0,5000).map(cleanThrow).filter(Boolean);
+  if(Array.isArray(s.okBalls))o.okBalls=s.okBalls.filter(i=>Number.isInteger(i)&&i>=0&&i<5000).slice(0,200);
   if(s.src&&SAFE_ID.test(s.src.f||''))o.src={f:s.src.f,date:SAFE_DATE.test(s.src.date||'')?s.src.date:null};
   return o;
 }
@@ -701,8 +702,45 @@ let VIEWKIND='hitting';
 // Launch-angle buckets (HitTrax-style): GB <10, LD 10–25, FB 25–50, PU >50
 function bucket(la){ if(la==null||isNaN(la))return null; if(la<10)return'gb'; if(la<=25)return'ld'; if(la<=50)return'fb'; return'pu'; }
 const HITVAL={out:0,single:1,double:2,triple:3,hr:4,foul:null,error:0};
+/* HitTrax occasionally mis-tracks a ball — a 96 mph reading from a 12-year-old becomes a max-EV
+   best, an "Elite" tag and a trend spike that never goes away. A reading far above everything else
+   he has hit (Tukey's fence on his own exit velos, plus 5 mph of slack), above anything plausible
+   for his age, or with an impossible launch angle is held out of every stat until it's confirmed. */
+let SUS=new WeakSet(), SUSLIST=[];
+function flagSuspects(){
+  SUS=new WeakSet(); SUSLIST=[];
+  const hit=DB.sessions.filter(s=>kindOf(s)==='hitting'&&dispo(s)!=='out');
+  const evs=hit.flatMap(s=>(s.balls||[]).map(b=>num(b.ev)).filter(v=>v>0)).sort((a,b)=>a-b);
+  const q=p=>evs[Math.floor(p*(evs.length-1))];
+  const bb=bench(DB.player.age);
+  let fence=bb?bb.elite+20:125, q3=null;
+  if(evs.length>=30){const q1=q(.25); q3=q(.75); fence=Math.min(fence,q3+1.5*(q3-q1)+5)}
+  hit.forEach(s=>(s.balls||[]).forEach((b,j)=>{
+    const ev=num(b.ev), la=num(b.la);
+    if(!((ev!=null&&ev>fence)||(la!=null&&Math.abs(la)>90)))return;
+    if((s.okBalls||[]).includes(j))return;
+    SUS.add(b); SUSLIST.push({s,j,ev,la,fence,q3});
+  }));
+}
+function keepBall(id,j){
+  const s=DB.sessions.find(x=>x.id===id); if(!s)return;
+  s.okBalls=(s.okBalls||[]).concat([j]); s.mtime=Date.now(); save(); render();
+}
+function suspectCard(){
+  if(!SUSLIST.length)return'';
+  const f=SUSLIST[0];
+  return `<div class="card note warn"><h2>Possible sensor misreads</h2>
+    <div class="hint">HitTrax mis-tracks the odd ball. ${SUSLIST.length===1?'This reading is':'These readings are'} far above anything else he has hit
+      ${f.q3!=null?`(his top quarter starts around ${Math.round(f.q3)} mph)`:'or beyond what is plausible at his age'}, so ${SUSLIST.length===1?'it is':'they are'}
+      left out of his averages, max and bests until you say otherwise.</div>
+    <div class="scroll" style="margin-top:8px"><table><thead><tr><th>Date</th><th>Exit velo</th><th>Launch angle</th><th></th></tr></thead><tbody>${
+      SUSLIST.map(x=>`<tr><td>${esc(x.s.date)}</td><td style="font-weight:800">${x.ev!=null?x.ev.toFixed(1)+' mph':'—'}</td>
+        <td>${x.la!=null?Math.round(x.la)+'°':'—'}</td>
+        <td><button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="keepBall('${esc(x.s.id)}',${x.j})">It was real — count it</button></td></tr>`).join('')
+    }</tbody></table></div></div>`;
+}
 function computeFromBalls(balls,hh,bq,pitchFallback){
-  const b=balls.filter(x=>x.ev!=null&&!isNaN(x.ev)&&x.ev>0);
+  const b=balls.filter(x=>x.ev!=null&&!isNaN(x.ev)&&x.ev>0&&!SUS.has(x));
   if(!b.length) return null;
   const evs=b.map(x=>+x.ev).sort((p,q)=>q-p);
   const n=evs.length, topN=Math.max(1,Math.round(n*0.25));
@@ -1437,21 +1475,22 @@ function cageVsGameCard(){
   const c=hit.length?computeFromBalls(hit,HH()):null, o=outcomeLine(hit);
   // balls in play in games, the denominator for every game rate below
   const gBIP=Math.max(0,(g.ab||0)-(g.k||0)-(g.hr||0)+(g.sf||0));
-  const thin=gBIP<10;
+  const thin=gBIP<GAME_BIP;
   const pct=v=>v==null?'—':Math.round(v)+'%';
   const row=(label,cage,game,note,strong)=>`<tr><td>${label}</td><td style="font-weight:700">${cage}</td>
     <td style="font-weight:700">${game}</td><td style="color:var(--dim);white-space:normal;font-size:13px">${note||''}</td></tr>`;
   let proc='', out='', reads=[];
   if(c){
+    const readable=!thin;                     // a 9-PA flip in fly-ball rate is a coin landing twice
     if(g.ldPct!=null)proc+=row('Line drives',pct(c.ld),pct(g.ldPct),'');
     if(g.fbPct!=null)proc+=row('Fly balls',pct(c.fb),pct(g.fbPct),'');
     if(g.gbPct!=null)proc+=row('Ground balls',pct(c.gb),pct(g.gbPct),'Game types are the scorekeeper\u2019s call — loose at this level.');
     if(g.hhb!=null&&gBIP)proc+=row('Hard contact',pct(c.hha)+' <small style="color:var(--dim)">hard-hit</small>',
       pct(g.hhb/gBIP*100)+' <small style="color:var(--dim)">HHB</small>','Cage = exit velo over the line; game = scored line drives and hard grounders. Same idea, different ruler.');
     // the read worth having: where the batted-ball mix flips between cage and game
-    if(g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)reads.push(`<b>He gets under the ball in games:</b> ${pct(g.fbPct)} fly balls against ${pct(c.fb)} in the cage. Live pitching is beating him on top of the ball — game-speed machine rounds with a line-drive focus close that gap faster than more front toss.`);
-    if(g.gbPct!=null&&c.gb!=null&&g.gbPct-c.gb>=20)reads.push(`<b>He rolls over in games:</b> ${pct(g.gbPct)} ground balls against ${pct(c.gb)} in the cage — usually early on off-speed or out front. Work on staying back against changing speeds.`);
-    if(g.ldPct!=null&&c.ld!=null&&c.ld-g.ldPct>=20)reads.push(`<b>The cage line drives aren't showing up yet:</b> ${pct(c.ld)} in the cage, ${pct(g.ldPct)} in games.`);
+    if(readable&&g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)reads.push(`<b>He gets under the ball in games:</b> ${pct(g.fbPct)} fly balls against ${pct(c.fb)} in the cage. Live pitching is beating him on top of the ball — game-speed machine rounds with a line-drive focus close that gap faster than more front toss.`);
+    if(readable&&g.gbPct!=null&&c.gb!=null&&g.gbPct-c.gb>=20)reads.push(`<b>He rolls over in games:</b> ${pct(g.gbPct)} ground balls against ${pct(c.gb)} in the cage — usually early on off-speed or out front. Work on staying back against changing speeds.`);
+    if(readable&&g.ldPct!=null&&c.ld!=null&&c.ld-g.ldPct>=20)reads.push(`<b>The cage line drives aren't showing up yet:</b> ${pct(c.ld)} in the cage, ${pct(g.ldPct)} in games.`);
   }
   if(o&&g.avg!=null)out+=row('Batting average',avg3(o.avg),avg3(g.avg),'Cage AVG is HitTrax simulating a defence against a soft feed — this gap mostly measures the opponent, not him.');
   if(o&&g.slg!=null)out+=row('Slugging',avg3(o.slg),avg3(g.slg),'');
@@ -2189,6 +2228,7 @@ function mixBar(s){
 const TABS=[['dash','Dashboard'],['log','Log Session'],['trends','Trends'],['sessions','Sessions'],['report','Report'],['data','Player & Data']];
 let TAB='dash', TRENDK='maxEV', DASHSEL=null;
 function render(){
+  flagSuspects();
   const showKind=countOf('catching')>0||VIEWKIND==='catching';
   document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
     `<button class="${TAB===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
@@ -2299,6 +2339,7 @@ function vDash(){
     ${cat?popSplit(st):''}
   </div>
   ${gm?seasonCard(S)+cageVsGameCard():''}
+  ${(cat||gm)?'':suspectCard()}
   ${(cat||gm)?'':batCard(last)}
   ${(gm||last.base3)?'':(b?(cat?popBenchCard(st,b):benchCard(st,b)):'')}
   ${(cat||gm)?'':gapsCard(last.balls,last)}
@@ -2508,62 +2549,145 @@ function testProp(x1,n1,x2,n2){    // two-proportion z
   return {from:p1*100,to:p2*100,diff:(p2-p1)*100,need:Z95*se*100,sig:Math.abs(p2-p1)>=Z95*se,n1,n2};
 }
 // pooled rows in date order, each carrying the threshold its own session was scored at
-function pooledRows(kind){
-  const rows=[];
-  vs2B(sorted(kind)).forEach(s=>{
-    if(kind==='hitting')(s.balls||[]).forEach(b=>{if(num(b.ev)>0)rows.push({...b,_hh:dayHHof(s)})});
-    if(kind==='catching')cleanThrows(s.throws).forEach(x=>rows.push(x));
+/* ---------- visits are the unit of evidence ----------
+   Balls from one trip to the cage share that day's feed, warm-up and energy, so 60 balls from two
+   visits are worth far fewer than 60 independent ones. Every comparison below groups the rows by
+   visit and uses the larger of the ball-to-ball variance and the visit-to-visit (cluster-robust)
+   one, with a t critical value on the number of visits — so a good day can't pass for a better
+   swing. A side needs two visits before anything is called at all. */
+const TCRIT=[Infinity,12.71,4.30,3.18,2.78,2.57,2.45,2.36,2.31,2.26,2.23,2.20,2.18,2.16,2.14,2.13,2.12,2.11,2.10,2.09,2.09];
+const tCrit=df=>df<1?Infinity:(df<=20?TCRIT[Math.round(df)]:(df<=30?2.05:(df<=60?2.01:1.96)));
+function clusterMean(groups){
+  groups=groups.filter(g=>g.length);
+  const all=groups.flat(), N=all.length, G=groups.length; if(N<2)return null;
+  const m=all.reduce((a,c)=>a+c,0)/N;
+  const iid=all.reduce((a,c)=>a+(c-m)*(c-m),0)/(N-1)/N;
+  const cr=G>=2?groups.reduce((a,g)=>{const r=g.reduce((s,y)=>s+y-m,0); return a+r*r},0)/(N*N)*G/(G-1):null;
+  return {m,n:N,G,v:Math.max(iid,cr||0),iid,cr};
+}
+// A and B are arrays of visits, each an array of values (0/1 for a rate, scale 100)
+function testClustered(A,B,scale){
+  scale=scale||1;
+  const a=clusterMean(A), b=clusterMean(B); if(!a||!b)return null;
+  const base={from:a.m*scale,to:b.m*scale,diff:(b.m-a.m)*scale,n1:a.n,n2:b.n,g1:a.G,g2:b.G};
+  if(a.G<2||b.G<2)return {...base,need:null,sig:false,few:true};
+  const se=Math.sqrt(a.v+b.v); if(!(se>0))return {...base,need:0,sig:false};
+  const crit=tCrit(a.G+b.G-2);
+  return {...base,need:crit*se*scale,sig:Math.abs(b.m-a.m)>=crit*se};
+}
+// one visit's rows, tagged with what its session was scored at
+function rowsOf(kind,s){
+  const tag={_d:s.date,_hh:dayHHof(s),_bq:dayBQof(s)};
+  if(kind==='catching')return cleanThrows(s.throws).map(x=>({...x,...tag}));
+  return (s.balls||[]).filter(b=>num(b.ev)>0&&!SUS.has(b)).map(b=>({...b,...tag}));
+}
+function visitUnits(kind){
+  return vs2B(sorted(kind)).map(s=>({date:s.date,rows:rowsOf(kind,s)})).filter(u=>u.rows.length);
+}
+function pooledRows(kind){return visitUnits(kind).flatMap(u=>u.rows)}
+const groupByVisit=rows=>{const by={}; rows.forEach(r=>{(by[r._d]=by[r._d]||[]).push(r)}); return Object.values(by)};
+// test every mean and rate metric between two sets of visits
+function compareUnits(kind,P,R){
+  const ms=rollMetrics(kind,P.concat(R).flatMap(u=>u.rows)), out=[];
+  ms.forEach(m=>{
+    if(m.type!=='mean'&&m.type!=='prop')return;
+    const vals=u=>m.type==='prop'?u.rows.filter(m.set).map(x=>m.f(x)?1:0):u.rows.map(m.f).filter(v=>v!=null);
+    const A=P.map(vals), B=R.map(vals);
+    if(A.flat().length<5||B.flat().length<5)return;
+    const r=testClustered(A,B,m.type==='prop'?100:1);
+    if(r)out.push({k:m.k,label:m.label,dir:m.dir,pct:m.type==='prop',...r});
   });
-  return rows;
+  return out;
 }
 const MOVE_MIN={hitting:15,catching:10,games:15};
+// the latest visits until there are enough rows from at least two of them
+// (cap keeps one side from swallowing every visit and leaving nothing to compare it with)
+function takeVisits(list,minRows,target,cap){
+  const out=[]; let n=0;
+  while(list.length&&out.length<cap&&(n<target||out.length<2)){const u=list.pop(); out.unshift(u); n+=u.rows.length}
+  return n>=minRows?out:null;
+}
+function windowsOf(kind,units){
+  const total=units.reduce((a,u)=>a+u.rows.length,0), min=MOVE_MIN[kind];
+  const target=Math.max(min,Math.min(60,Math.floor(total/2)));
+  const cap=Math.max(1,Math.floor(units.length/2));
+  const rest=units.slice(), R=takeVisits(rest,min,target,cap), P=R?takeVisits(rest,min,target,cap):null;
+  return (R&&P)?{P,R}:null;
+}
+function gameUnits(){
+  return sorted('games').map(s=>{const g=sessionStats(s), n=k=>num(g[k])||0;
+    const bits=(x,of)=>Array.from({length:Math.max(0,Math.round(of))},(_,i)=>i<Math.round(x)?1:0);
+    return {date:s.date,pa:n('pa'),avg:bits(n('h'),n('ab')),kPct:bits(n('k'),n('pa')),bbPct:bits(n('bb'),n('pa'))}}).filter(u=>u.pa>0);
+}
+function gameWindows(units){
+  const take=list=>{const out=[]; let pa=0;
+    while(list.length&&(pa<MOVE_MIN.games||out.length<2)){const u=list.pop(); out.unshift(u); pa+=u.pa}
+    return pa>=MOVE_MIN.games?out:null};
+  const rest=units.slice(), R=take(rest), P=R?take(rest):null;
+  return (R&&P)?{P,R}:null;
+}
+function compareGames(P,R){
+  const out=[];
+  [['avg','Batting average','up'],['kPct','Strikeout rate','down'],['bbPct','Walk rate','up']].forEach(([k,label,dir])=>{
+    const A=P.map(u=>u[k]), B=R.map(u=>u[k]); if(A.flat().length<5||B.flat().length<5)return;
+    const r=testClustered(A,B,100); if(r)out.push({k,label,dir,pct:true,...r});
+  });
+  return out;
+}
+/* A change is only "real" once it has held for two looks in a row: significant now, and also
+   significant (same direction) before the latest visit was added. Re-testing seven measures after
+   every session would otherwise turn up a false "improving" every few weeks by chance alone. */
 function movingTests(kind){
-  if(kind==='games'){
-    // windows built from whole games, back from the latest, until each side holds enough PA
-    const G=sorted('games').map(s=>sessionStats(s));
-    const take=(list)=>{const out=[]; let pa=0;
-      while(list.length&&pa<MOVE_MIN.games){const g=list.pop(); out.push(g); pa+=num(g.pa)||0}
-      return pa>=MOVE_MIN.games?sumGames(out):null};
-    const rest=G.slice(), recent=take(rest), prior=take(rest);
-    if(!recent||!prior)return {need:`${MOVE_MIN.games} plate appearances on each side`,
-      have:G.reduce((a,g)=>a+(num(g.pa)||0),0),unit:'PA'};
-    const t=[];
-    const add=(k,label,x1,n1,x2,n2,dir)=>{const r=testProp(x1,n1,x2,n2); if(r)t.push({k,label,dir,...r,pct:true})};
-    add('avg','Batting average',prior.h||0,prior.ab||0,recent.h||0,recent.ab||0,'up');
-    add('kPct','Strikeout rate',prior.k||0,prior.pa||0,recent.k||0,recent.pa||0,'down');
-    add('bbPct','Walk rate',prior.bb||0,prior.pa||0,recent.bb||0,recent.pa||0,'up');
-    return {tests:t,window:`your last ${recent.pa} PA vs the ${prior.pa} before`};
-  }
-  const rows=pooledRows(kind), min=MOVE_MIN[kind];
-  const N=Math.min(60,Math.floor(rows.length/2));
-  if(N<min)return {need:`${min*2} ${kind==='catching'?'clean throws':'batted balls'}`,have:rows.length,
-    unit:kind==='catching'?'throws':'balls'};
-  const prior=rows.slice(rows.length-2*N,rows.length-N), recent=rows.slice(rows.length-N);
-  const t=[];
-  const mean=(k,label,f,dir)=>{const r=testMean(prior.map(f).filter(v=>v!=null),recent.map(f).filter(v=>v!=null));
-    if(r)t.push({k,label,dir,...r})};
-  const prop=(k,label,inSet,pred,dir)=>{const a=prior.filter(inSet), b=recent.filter(inSet);
-    const r=testProp(a.filter(pred).length,a.length,b.filter(pred).length,b.length);
-    if(r)t.push({k,label,dir,...r,pct:true})};
-  if(kind==='hitting'){
-    const la=x=>num(x.la), type=x=>x.btype||bucket(x.la);
-    mean('avgEV','Avg exit velo',x=>num(x.ev),'up');
-    // same balls, each moved to a common pitch speed — separates the swing from the feed
-    const ps=prior.concat(recent).map(x=>num(x.pitch)).filter(v=>v>0).sort((a,b)=>a-b);
-    if(ps.length>=10){const pRef=ps[Math.floor(ps.length/2)], q=Q();
-      mean('adjEV',`Exit velo at a ${Math.round(pRef)} mph pitch`,x=>num(x.pitch)>0?+x.ev-q*(+x.pitch-pRef):null,'up');}
-    prop('hha','Hard-hit rate',()=>true,x=>+x.ev>=x._hh,'up');
-    prop('sweet','Sweet-spot rate',x=>la(x)!=null,x=>la(x)>=8&&la(x)<=32,'up');
-    prop('ld','Line-drive rate',x=>type(x),x=>type(x)==='ld','up');
-    prop('gb','Ground-ball rate',x=>type(x),x=>type(x)==='gb','down');
-    mean('avgLA','Avg launch angle',la,'win');
-  } else {
-    mean('avgPop','Avg pop time',x=>num(x.pop),'down');
-    mean('avgExch','Avg exchange',x=>num(x.exch)>0.2?num(x.exch):null,'down');
-    mean('avgVelo','Avg arm strength',x=>num(x.velo)>15?num(x.velo):null,'up');
-    prop('outPct','Projected outs',x=>x.outcome,x=>x.outcome==='out','up');
-  }
-  return {tests:t,window:`your last ${N} ${kind==='catching'?'clean throws':'batted balls'} vs the ${N} before`,recent};
+  const isG=kind==='games', units=isG?gameUnits():visitUnits(kind);
+  const win=isG?gameWindows:(u=>windowsOf(kind,u)), cmp=isG?compareGames:((P,R)=>compareUnits(kind,P,R));
+  const W=win(units);
+  const unit=isG?'PA':(kind==='catching'?'clean throws':'batted balls');
+  if(!W){const have=isG?units.reduce((a,u)=>a+u.pa,0):units.reduce((a,u)=>a+u.rows.length,0);
+    return {need:`${MOVE_MIN[kind]*2} ${unit} over at least 4 ${isG?'games':'visits'}`,have,unit}}
+  const tests=cmp(W.P,W.R);
+  const W0=units.length>1?win(units.slice(0,-1)):null;          // the same question, one visit ago
+  const prev=W0?cmp(W0.P,W0.R):[];
+  tests.forEach(r=>{const p=prev.find(x=>x.k===r.k); r.confirmed=!!(r.sig&&p&&p.sig&&Math.sign(p.diff)===Math.sign(r.diff))});
+  const size=L=>isG?L.reduce((a,u)=>a+u.pa,0):L.reduce((a,u)=>a+u.rows.length,0);
+  const vis=n=>`${n} ${isG?'game':'visit'}${n>1?'s':''}`;
+  return {tests,few:tests.length&&tests.every(r=>r.few),
+    window:`your last ${size(W.R)} ${isG?'PA':unit} (${vis(W.R.length)}) vs the ${size(W.P)} before (${vis(W.P.length)})`,
+    recent:isG?null:W.R.flatMap(u=>u.rows)};
+}
+/* start vs now for the report and trends: the first visits against the latest, never sharing one */
+function progressWindows(kind){
+  const units=visitUnits(kind); if(units.length<2)return null;
+  const total=units.reduce((a,u)=>a+u.rows.length,0), min=MOVE_MIN[kind];
+  const target=Math.max(min,Math.min(60,Math.floor(total/3)));
+  const cap=Math.max(1,Math.floor(units.length/2));
+  const rest=units.slice(), R=takeVisits(rest,1,target,cap);
+  const front=rest.slice().reverse(), S=front.length?takeVisits(front,1,target,cap):null;   // from the front
+  if(S)S.reverse();
+  if(!R||!S)return null;
+  return {S,R,tests:compareUnits(kind,S,R)};
+}
+function windowSummary(kind,L){
+  const rows=L.flatMap(u=>u.rows), last=rows[rows.length-1]||{};
+  return kind==='catching'?(computeFromThrows(rows)||{}):(computeFromBalls(rows,last._hh||HH(),last._bq||Q())||{});
+}
+const spanOf=L=>{const a=L[0].date, b=L[L.length-1].date; return a===b?a.slice(5):a.slice(5)+' → '+b.slice(5)};
+// one row per metric: start window, now window, change, and whether it holds up
+function progressRows(kind){
+  const W=progressWindows(kind); if(!W)return null;
+  const a=windowSummary(kind,W.S), b=windowSummary(kind,W.R);
+  const rows=KIND[kind].metrics.map(m=>{
+    const f=num(a[m.k]), l=num(b[m.k]); if(f==null&&l==null)return null;
+    const t=W.tests.find(x=>x.k===m.k);
+    let read='—', cls='flat';
+    if(t&&t.few){read='needs 2+ visits each side'}
+    else if(t&&t.sig){const good=moveGood(t); read=good?'real — better':'real — worse'; cls=good?'up':'down'}
+    else if(t){read='inside the noise'}
+    else if(/^(max|best)/.test(m.k))read='single best — not tested';
+    else if(['topEV','top25Pop','batSpeed'].includes(m.k))read='top quarter — not tested';
+    return {m,f,l,d:(f!=null&&l!=null)?l-f:null,read,cls,tested:!!t};
+  }).filter(Boolean);
+  const n=L=>L.reduce((x,u)=>x+u.rows.length,0), u=kind==='catching'?'throws':'balls';
+  return {rows,W,label:`Start = first ${W.S.length} visit${W.S.length>1?'s':''} (${spanOf(W.S)}, ${n(W.S)} ${u}) · Now = last ${W.R.length} visit${W.R.length>1?'s':''} (${spanOf(W.R)}, ${n(W.R)} ${u})`};
 }
 function moveLine(r){
   const u=r.pct?'%':(MK[r.k]?MK[r.k].u:''), dec=r.pct?0:((MK[r.k]&&MK[r.k].u==='s')?2:1);
@@ -2582,15 +2706,20 @@ function coachCard(S){
   if(M2.need){
     body=`<div class="hint">Not enough yet to separate real change from session-to-session wobble —
       this needs ${M2.need} (you have ${M2.have} ${M2.unit}). Until then any "improvement" would be noise.</div>`;
+  } else if(M2.few){
+    body=`<div class="hint">${esc(M2.window)}</div><div class="hint" style="margin-top:6px">Each side needs balls from at least
+      two visits before anything can be called — one visit can't separate a good day from a better swing.</div>`;
   } else {
-    const sig=M2.tests.filter(r=>r.sig), quiet=M2.tests.filter(r=>!r.sig);
-    const good=sig.filter(moveGood), work=sig.filter(r=>!moveGood(r));
-    body=`<div class="hint">${esc(M2.window)} — only changes that clear the noise are called</div>
+    const real=M2.tests.filter(r=>r.confirmed), emerging=M2.tests.filter(r=>r.sig&&!r.confirmed), quiet=M2.tests.filter(r=>!r.sig);
+    const good=real.filter(moveGood), work=real.filter(r=>!moveGood(r));
+    const need=r=>r.few?'needs two visits on each side':`would need about ±${r.pct?r.need.toFixed(0)+' pts':r.need.toFixed((MK[r.k]&&MK[r.k].u==='s')?2:1)+((MK[r.k]&&MK[r.k].u==='°')?'°':' '+(MK[r.k]?MK[r.k].u:''))} to count`;
+    body=`<div class="hint">${esc(M2.window)} — compared ${kind==='games'?'game by game':'visit by visit'}, and only called once a change has held for two ${kind==='games'?'games':'sessions'} running</div>
       ${good.length?'<div style="margin-top:6px"><span class="chip g">Improving</span><ul class="tight">'+good.map(r=>'<li>'+moveLine(r)+'</li>').join('')+'</ul></div>':''}
       ${work.length?'<div style="margin-top:12px"><span class="chip a">Slipping</span><ul class="tight">'+work.map(r=>'<li>'+moveLine(r)+'</li>').join('')+'</ul></div>':''}
-      ${!sig.length?'<div class="hint" style="margin-top:6px">Nothing has moved beyond normal wobble yet.</div>':''}
+      ${emerging.length?'<div style="margin-top:12px"><span class="chip">Emerging</span> <span class="hint">clears the noise for the first time — one more session confirms it</span><ul class="tight">'+emerging.map(r=>'<li>'+moveLine(r)+'</li>').join('')+'</ul></div>':''}
+      ${!real.length&&!emerging.length?'<div class="hint" style="margin-top:6px">Nothing has moved beyond normal '+(kind==='games'?'game-to-game':'visit-to-visit')+' wobble yet.</div>':''}
       ${quiet.length?`<details style="margin-top:12px"><summary class="hint" style="cursor:pointer">Inside the noise (${quiet.length})</summary>
-        <ul class="tight">${quiet.map(r=>`<li>${moveLine(r)} — would need about ±${r.pct?r.need.toFixed(0)+' pts':r.need.toFixed((MK[r.k]&&MK[r.k].u==='s')?2:1)+((MK[r.k]&&MK[r.k].u==='°')?'°':' '+(MK[r.k]?MK[r.k].u:''))} to count</li>`).join('')}</ul></details>`:''}`;
+        <ul class="tight">${quiet.map(r=>`<li>${moveLine(r)} — ${need(r)}</li>`).join('')}</ul></details>`:''}`;
   }
   const door=kind==='games'?'':`<div style="margin-top:12px"><button class="btn ghost" style="padding:6px 12px;font-size:13px"
     onclick="TRENDMODE='rolling';go('trends')">See the whole history as a rolling chart →</button></div>`;
@@ -2613,9 +2742,9 @@ function coachCues(kind,M2){
     if(spread!=null&&spread>0.18)cues.push('Big gap between best and average pop ('+spread.toFixed(2)+'s) — the quick one is in there, repeating it is the work.');
   } else {
     const st=computeFromBalls(rows,rows[0]._hh||HH())||{};
-    if(num(st.gb)>=45)cues.push('Ground-ball rate is high — the barrel is working down through the zone. Drill: high-tee / top-half contact work.');
+    if(num(st.gb)>=GB_HIGH)cues.push('Ground-ball rate is high — the barrel is working down through the zone. Drill: high-tee / top-half contact work.');
     if(num(st.pu)>=15)cues.push('Pop-ups are up — usually early bat-head release or too steep. Drill: line-drive-only rounds off the tee.');
-    if(num(st.sweet)!=null&&num(st.sweet)<45)cues.push('Under half the batted balls are in the 8–32° window. Chase sweet-spot % before chasing max velo.');
+    if(num(st.sweet)!=null&&num(st.sweet)<SWEET_LOW)cues.push('Only '+Math.round(st.sweet)+'% of batted balls are in the 8–32° window (big leaguers: about a third). Chase sweet-spot % before chasing max velo.');
     if(num(st.avgEV)!=null&&num(st.maxEV)!=null&&num(st.maxEV)-num(st.avgEV)>15)cues.push('Big gap between max and average EV — the power is there, consistency of contact is the gap.');
     if(num(st.ld)>=25&&num(st.hha)>=40)cues.push('Line-drive rate and hard-hit rate are both strong — this is the profile you want to repeat.');
   }
@@ -2661,15 +2790,7 @@ function rollMetrics(kind,rows){
   }
   return list;
 }
-function rollRows(kind){
-  const rows=[];
-  vs2B(sorted(kind)).forEach(s=>{
-    const tag={_d:s.date,_hh:dayHHof(s),_bq:dayBQof(s)};
-    if(kind==='hitting')(s.balls||[]).forEach(b=>{if(num(b.ev)>0)rows.push({...b,...tag})});
-    if(kind==='catching')cleanThrows(s.throws).forEach(x=>rows.push({...x,...tag}));
-  });
-  return rows;
-}
+function rollRows(kind){return pooledRows(kind)}
 function wilson(x,n){                       // honest interval for a rate on a small sample
   if(!n)return null; const z=Z95, p=x/n, den=1+z*z/n;
   const c=(p+z*z/(2*n))/den, h=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n))/den;
@@ -2697,8 +2818,10 @@ function rollVerdict(m,N,rows){
   if(rows.length<2*N)return {need:true};
   const a=rows.slice(0,N), b=rows.slice(rows.length-N);
   let r=null;
-  if(m.type==='prop'){const A=a.filter(m.set), B=b.filter(m.set); r=testProp(A.filter(m.f).length,A.length,B.filter(m.f).length,B.length)}
-  else if(m.type==='mean')r=testMean(a.map(m.f).filter(v=>v!=null),b.map(m.f).filter(v=>v!=null));
+  const vals=g=>m.type==='prop'?g.filter(m.set).map(x=>m.f(x)?1:0):g.map(m.f).filter(v=>v!=null);
+  if(m.type==='prop'||m.type==='mean'){
+    const A=groupByVisit(a).map(vals), B=groupByVisit(b).map(vals);
+    if(A.flat().length>=5&&B.flat().length>=5)r=testClustered(A,B,m.type==='prop'?100:1)}
   return {r,start:windowStat(m,a),now:windowStat(m,b)};
 }
 function rollingChart(pts,m,rows,N){
@@ -2762,6 +2885,8 @@ function rollingView(){
   let verdict;
   if(V.need)verdict=`<div class="hint">Comparing where he started with now needs two windows that don't share a ball —
     ${2*N} ${unit}; you have ${rows.length}. The line still shows the shape.</div>`;
+  else if(V.r&&V.r.few)verdict=`<div class="hint">The first and last ${N} each need balls from at least two visits before the
+    change can be judged — one visit can't separate a good day from a better swing.</div>`;
   else if(!V.r)verdict=`<div class="hint">${m.type==='sd'?'Spreads':'Top-quarter averages'} don't have a clean confidence band here — read the line's direction rather than a verdict.</div>`;
   else{
     const good=moveGood({dir:m.dir,diff:V.r.diff,from:V.r.from,to:V.r.to});
@@ -2771,7 +2896,7 @@ function rollingView(){
   }
   return `<div class="card"><h2>Rolling progress</h2>
     <div class="hint">Every ${unit.replace(/s$/,'')} in order, sessions ignored — each point is the last ${N}, with its 95% band.
-      When today's band clears where he started, the change is real.</div>
+      The verdict below compares visits, not balls, so one hot day can't make the call.</div>
     ${head}${rollingChart(pts,m,rows,N)}
     <div class="tiles" style="margin-top:14px">
       <div class="tile"><div class="k">Where he started</div><div class="v" style="font-size:22px">${f(V.start?V.start.v:pts[0].v)}</div><div class="d flat">first ${N}${band(V.start||pts[0])}</div></div>
@@ -2857,6 +2982,8 @@ function delGoal(id){
 /* ============================== coach's summary ==============================
    One strength, one thing to work on, one drill — pulled from all three sides of his game and
    only from evidence the app trusts (changes that cleared the noise, recent windows, benchmarks). */
+// thresholds: 1 K in 9 PA could be a true rate anywhere from 2% to 43%, so game reads wait for ~25 PA
+const GAME_PA=25, GAME_BIP=15, SWEET_LOW=35, GB_HIGH=50;
 function coachSummaryCard(){
   const S=[], F=[], basis=[];
   const push=(arr,w,src,text,drill)=>arr.push({w,src,text,drill});
@@ -2865,12 +2992,14 @@ function coachSummaryCard(){
   if(hitRows.length){
     basis.push(`${hitRows.length} batted balls`);
     const mv=movingTests('hitting');
-    (mv.tests||[]).filter(r=>r.sig&&moveGood(r)).forEach(r=>push(S,3,'Hitting',`${r.label} up ${Math.abs(r.diff).toFixed(r.pct?0:1)}${r.pct?' pts':' mph'} — beyond the noise.`));
-    (mv.tests||[]).filter(r=>r.sig&&!moveGood(r)).forEach(r=>push(F,2.5,'Hitting',`${r.label} slipping (${r.pct?Math.round(r.from)+'% → '+Math.round(r.to)+'%':r.from.toFixed(1)+' → '+r.to.toFixed(1)}).`,'Back to the basics that produced the earlier numbers — short, focused tee rounds before live work.'));
+    (mv.tests||[]).filter(r=>r.confirmed&&moveGood(r)).forEach(r=>push(S,3,'Hitting',`${r.label} up ${Math.abs(r.diff).toFixed(r.pct?0:1)}${r.pct?' pts':' mph'} — beyond the noise.`));
+    (mv.tests||[]).filter(r=>r.confirmed&&!moveGood(r)).forEach(r=>push(F,2.5,'Hitting',`${r.label} slipping (${r.pct?Math.round(r.from)+'% → '+Math.round(r.to)+'%':r.from.toFixed(1)+' → '+r.to.toFixed(1)}).`,'Back to the basics that produced the earlier numbers — short, focused tee rounds before live work.'));
     const recent=hitRows.slice(-30), st=computeFromBalls(recent,recent[recent.length-1]._hh)||{};
     if(recent.length>=15){
-      if(num(st.sweet)!=null&&st.sweet<45)push(F,2,'Hitting',`Only ${Math.round(st.sweet)}% of recent balls are in the 8–32° window.`,'Line-drive-only rounds off the tee: score a point only for balls that would clear the infield on a line.');
-      if(num(st.gb)>=45)push(F,2,'Hitting',`${Math.round(st.gb)}% ground balls lately — the barrel is working down.`,'High-tee, top-half-of-the-zone work: drive it, don’t lift it.');
+      // big-league hitters put about a third of their balls in 8–32° and ~43% on the ground — so the
+      // flags sit past those marks, not at them (a soft cage feed should if anything beat them)
+      if(num(st.sweet)!=null&&st.sweet<SWEET_LOW)push(F,2,'Hitting',`Only ${Math.round(st.sweet)}% of recent balls are in the 8–32° window — big leaguers manage about a third.`,'Line-drive-only rounds off the tee: score a point only for balls that would clear the infield on a line.');
+      if(num(st.gb)>=GB_HIGH)push(F,2,'Hitting',`${Math.round(st.gb)}% ground balls lately — the barrel is working down.`,'High-tee, top-half-of-the-zone work: drive it, don’t lift it.');
     }
     // feed-speed bat drop on the latest hitting date
     const last=sorted('hitting').slice(-1)[0];
@@ -2887,7 +3016,7 @@ function coachSummaryCard(){
   if(thrRows.length){
     basis.push(`${thrRows.length} clean throws`);
     const mv=movingTests('catching');
-    (mv.tests||[]).filter(r=>r.sig&&moveGood(r)).forEach(r=>push(S,3,'Catching',`${r.label} improved (${r.from.toFixed(2)} → ${r.to.toFixed(2)}) — beyond the noise.`));
+    (mv.tests||[]).filter(r=>r.confirmed&&moveGood(r)).forEach(r=>push(S,3,'Catching',`${r.label} improved (${r.from.toFixed(2)} → ${r.to.toFixed(2)}) — beyond the noise.`));
     const st=computeFromThrows(thrRows.slice(-20))||{}, pb=popBench(DB.player.age);
     const allPop=computeFromThrows(vs2B(sorted('catching')).flatMap(s=>s.throws||[]))||{};
     if(pb&&num(allPop.bestPop)!=null&&allPop.bestPop<=pb.elite)push(S,2,'Catching',`Best pop ${allPop.bestPop.toFixed(2)}s — elite range for age ${pb.label}.`);
@@ -2903,16 +3032,16 @@ function coachSummaryCard(){
   const G=sorted('games').map(s=>sessionStats(s));
   if(G.length){
     const g=sumGames(G); basis.push(`${g.pa||0} game PA`);
-    if((g.pa||0)>=9&&g.kPct!=null&&g.kPct<=15)push(S,2,'Games',`Puts the ball in play — ${Math.round(g.kPct)}% strikeouts.`);
-    if((g.pa||0)>=9&&g.bbPct!=null&&g.bbPct>=15)push(S,1.5,'Games',`Patient — walks in ${Math.round(g.bbPct)}% of plate appearances.`);
+    if((g.pa||0)>=GAME_PA&&g.kPct!=null&&g.kPct<=15)push(S,2,'Games',`Puts the ball in play — ${Math.round(g.kPct)}% strikeouts.`);
+    if((g.pa||0)>=GAME_PA&&g.bbPct!=null&&g.bbPct>=15)push(S,1.5,'Games',`Patient — walks in ${Math.round(g.bbPct)}% of plate appearances.`);
     // passed balls: the receiving/blocking side HitTrax never sees. Some are on the pitcher (and
     // 12U pitchers are wild), but past ~1.5 a game the catcher's blocks are part of it.
     if((g.outs||0)>=36&&g.pb6!=null&&g.pb6>=1.5)push(F,2.5,'Catching',`${g.pb} passed balls in ${innStr(g.outs)} innings caught — about ${g.pb6.toFixed(1)} per 6-inning game.`,
       'Blocking, 10 minutes a session: knees down on short-hop flips in the dirt — chest over the ball, glove closing the gap between the knees, ball kept in front. Start slow and straight on, then add angles.');
-    if((g.pa||0)>=9&&g.kPct!=null&&g.kPct>=30)push(F,2.5,'Games',`Striking out in ${Math.round(g.kPct)}% of plate appearances.`,'Two-strike approach: choke up, widen the stance, protect the plate.');
+    if((g.pa||0)>=GAME_PA&&g.kPct!=null&&g.kPct>=30)push(F,2.5,'Games',`Striking out in ${Math.round(g.kPct)}% of plate appearances.`,'Two-strike approach: choke up, widen the stance, protect the plate.');
     if(hitRows.length){
       const c=computeFromBalls(hitRows,HH())||{}, bip=Math.max(0,(g.ab||0)-(g.k||0)-(g.hr||0)+(g.sf||0));
-      if(bip>=5&&g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)push(F,3,'Games',`Gets under it in games: ${Math.round(g.fbPct)}% fly balls vs ${Math.round(c.fb)}% in the cage.`,'Game-speed machine rounds scored line-drive only — the soft feed in the cage isn’t testing the swing he needs.');
+      if(bip>=GAME_BIP&&g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)push(F,3,'Games',`Gets under it in games: ${Math.round(g.fbPct)}% fly balls vs ${Math.round(c.fb)}% in the cage.`,'Game-speed machine rounds scored line-drive only — the soft feed in the cage isn’t testing the swing he needs.');
     }
   }
   if(!S.length&&!F.length)return'';
@@ -3288,16 +3417,42 @@ function trendModeBar(){
 }
 function vTrends(){
   if(TRENDMODE==='rolling')return `<div style="margin-top:14px">${trendModeBar()}</div>`+rollingView();
-  const S=series(TRENDK);
   const avail=KIND[VIEWKIND].metrics.filter(m=>series(m.k).length>0);
   if(!avail.length)return '<div class="card"><div class="empty">Log a session first.</div></div>';
   if(!avail.find(m=>m.k===TRENDK))TRENDK=avail[0].k;
+  const S=series(TRENDK);
   const b=bench(DB.player.age), pb=popBench(DB.player.age);
   let band=MK[TRENDK].dir==='win'?MK[TRENDK].win:null;
   if(TRENDK==='maxEV'&&b)band=[b.good[0],b.good[1]];
   if((TRENDK==='avgPop'||TRENDK==='bestPop')&&pb)band=[pb.elite,pb.good];
   const first=S[0],lastp=S[S.length-1];
   const chg=S.length>1?lastp.v-first.v:null;
+  // hitting and catching: the first visits against the latest, pooled and tested — not two single days
+  const PR=VIEWKIND==='games'?null:progressRows(VIEWKIND);
+  const pr=PR&&PR.rows.find(r=>r.m.k===TRENDK);
+  const unit=k=>MK[k].u==='%'?'%':(MK[k].u?' '+MK[k].u:'');
+  const tiles=pr?`
+     <div class="tile"><div class="k">Start</div><div class="v">${fmt(TRENDK,pr.f)}<small>${MK[TRENDK].u}</small></div><div class="d flat">${esc(spanOf(PR.W.S))}</div></div>
+     <div class="tile"><div class="k">Now</div><div class="v">${fmt(TRENDK,pr.l)}<small>${MK[TRENDK].u}</small></div><div class="d flat">${esc(spanOf(PR.W.R))}</div></div>
+     <div class="tile"><div class="k">Change</div><div class="v ${pr.tested?pr.cls:dirClass(TRENDK,pr.d)}">${pr.d==null?'—':dstr(TRENDK,pr.d)}</div><div class="d flat">${esc(pr.read)}</div></div>
+     <div class="tile"><div class="k">Sessions</div><div class="v">${S.length}</div></div>`
+   :`
+     <div class="tile"><div class="k">First (${esc(first.date)})</div><div class="v">${fmt(TRENDK,first.v)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">Latest (${esc(lastp.date)})</div><div class="v">${fmt(TRENDK,lastp.v)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">${VIEWKIND==='games'?'Change':'Total change'}</div><div class="v ${dirClass(TRENDK,chg)}">${chg==null?'—':dstr(TRENDK,chg)}</div></div>
+     <div class="tile"><div class="k">Sessions</div><div class="v">${S.length}</div></div>`;
+  const table=PR?`<div class="hint">${esc(PR.label)}. "Real" means the change holds up comparing visit against visit; maxes are
+       single balls and top-quarter averages have no clean error bar, so neither is tested.</div>
+     <div class="scroll"><table><thead><tr><th>Metric</th><th>Start</th><th>Now</th><th>Change</th><th>Read</th><th>Best</th></tr></thead><tbody>`+
+     PR.rows.map(r=>{const bs=best(r.m.k);
+       return `<tr class="clickable" onclick="TRENDK='${r.m.k}';render();window.scrollTo(0,0)"><td>${r.m.n}</td><td>${fmt(r.m.k,r.f)}</td>
+        <td style="font-weight:700">${fmt(r.m.k,r.l)}</td><td class="${r.tested?r.cls:'flat'}" style="font-weight:700">${r.d==null?'—':dstr(r.m.k,r.d)}</td>
+        <td style="color:var(--dim);font-size:12.5px">${esc(r.read)}</td><td>${bs?fmt(r.m.k,bs.v):'—'}</td></tr>`}).join('')+`</tbody></table></div>`
+   :`<div class="scroll"><table><thead><tr><th>Metric</th><th>First</th><th>Latest</th><th>Change</th><th>Best</th></tr></thead><tbody>`+
+     avail.map(m=>{const s2=series(m.k),f=s2[0],l=s2[s2.length-1],d=s2.length>1?l.v-f.v:null,bs=best(m.k);
+       return `<tr class="clickable" onclick="TRENDK='${m.k}';render();window.scrollTo(0,0)"><td>${m.n}</td><td>${fmt(m.k,f.v)}</td>
+        <td style="font-weight:700">${fmt(m.k,l.v)}</td><td class="${dirClass(m.k,d)}" style="font-weight:700">${d==null?'—':dstr(m.k,d)}</td>
+        <td>${bs?fmt(m.k,bs.v):'—'}</td></tr>`}).join('')+`</tbody></table></div>`;
   return `<div style="margin-top:14px">${trendModeBar()}</div><div class="card">
    <h2>Trends</h2><div class="hint">${VIEWKIND==='games'
      ?'Season to date after each game. Counting stats are running totals.'
@@ -3306,19 +3461,8 @@ function vTrends(){
      ${avail.map(m=>`<option value="${m.k}" ${m.k===TRENDK?'selected':''}>${m.n}</option>`).join('')}
    </select></div>
    ${lineChart(series(TRENDK),TRENDK,{band})}
-   <div class="tiles" style="margin-top:14px">
-     <div class="tile"><div class="k">First (${esc(first.date)})</div><div class="v">${fmt(TRENDK,first.v)}<small>${MK[TRENDK].u}</small></div></div>
-     <div class="tile"><div class="k">Latest (${esc(lastp.date)})</div><div class="v">${fmt(TRENDK,lastp.v)}<small>${MK[TRENDK].u}</small></div></div>
-     <div class="tile"><div class="k">Total change</div><div class="v ${dirClass(TRENDK,chg)}">${chg==null?'—':dstr(TRENDK,chg)}</div></div>
-     <div class="tile"><div class="k">Sessions</div><div class="v">${S.length}</div></div>
-   </div></div>
-   <div class="card"><h2>All metrics at a glance</h2>
-   <div class="scroll"><table><thead><tr><th>Metric</th><th>First</th><th>Latest</th><th>Change</th><th>Best</th></tr></thead><tbody>`+
-   avail.map(m=>{const s2=series(m.k),f=s2[0],l=s2[s2.length-1],d=s2.length>1?l.v-f.v:null,bs=best(m.k);
-     return `<tr class="clickable" onclick="TRENDK='${m.k}';render();window.scrollTo(0,0)"><td>${m.n}</td><td>${fmt(m.k,f.v)}</td>
-      <td style="font-weight:700">${fmt(m.k,l.v)}</td><td class="${dirClass(m.k,d)}" style="font-weight:700">${d==null?'—':dstr(m.k,d)}</td>
-      <td>${bs?fmt(m.k,bs.v):'—'}</td></tr>`}).join('')+
-   `</tbody></table></div></div>`;
+   <div class="tiles" style="margin-top:14px">${tiles}</div></div>
+   <div class="card"><h2>All metrics at a glance</h2>${table}</div>`;
 }
 
 /* ---------- sessions ---------- */
@@ -3429,7 +3573,7 @@ function openSession(id){
    ${balls.length?`<div style="margin-top:18px"><label>Batted balls (${balls.length})</label><div class="scroll" style="max-height:240px">
      <table class="mono"><thead><tr><th>#</th><th>EV</th><th>LA</th><th>Dist</th><th>Type</th><th>Result</th></tr></thead><tbody>`+
      balls.map((b,i)=>`<tr><td>${i+1}</td><td>${(+b.ev).toFixed(1)}</td><td>${b.la!=null?(+b.la).toFixed(0)+'°':'—'}</td>
-       <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${((b.btype||bucket(b.la))||'—').toUpperCase()}</td><td>${esc(b.result||'—')}</td></tr>`).join('')+
+       <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${((b.btype||bucket(b.la))||'—').toUpperCase()}</td><td>${esc(b.result||'—')}${SUS.has(b)?' <span class="chip a">misread? not counted</span>':''}</td></tr>`).join('')+
      `</tbody></table></div></div>`:''}
    ${roundsTable(s,id)}`;
   initFlights();
@@ -3518,18 +3662,25 @@ function vReport(){
   if(S.length<2)return '<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
   const from=S[0].date,to=S[S.length-1].date, cat=VIEWKIND==='catching';
   const b=cat?popBench(DB.player.age):bench(DB.player.age);
-  const rows=KIND[VIEWKIND].metrics.map(m=>{const s2=series(m.k); if(s2.length<2)return'';
+  // the first visits against the latest, pooled and tested — what a coach should read, not two single days
+  const PR=progressRows(VIEWKIND);
+  const rows=PR?PR.rows.map(r=>{const bs=best(r.m.k);
+    return `<tr><td>${r.m.n}</td><td>${fmt(r.m.k,r.f)}</td><td style="font-weight:700">${fmt(r.m.k,r.l)}</td>
+      <td class="${r.tested?r.cls:'flat'}" style="font-weight:700">${r.d==null?'—':dstr(r.m.k,r.d)}</td>
+      <td style="color:var(--dim);font-size:12.5px">${esc(r.read)}</td><td>${bs?fmt(r.m.k,bs.v)+' · '+bs.date:'—'}</td></tr>`}).join('')
+   :KIND[VIEWKIND].metrics.map(m=>{const s2=series(m.k); if(s2.length<2)return'';
     const f=s2[0].v,l=s2[s2.length-1].v,d=l-f,bs=best(m.k);
-    const pct=f?((d/Math.abs(f))*100):null;
     return `<tr><td>${m.n}</td><td>${fmt(m.k,f)}</td><td style="font-weight:700">${fmt(m.k,l)}</td>
-      <td class="${dirClass(m.k,d)}" style="font-weight:700">${dstr(m.k,d)}${pct!=null&&m.u!=='%'&&m.u!=='°'?` <small style="color:var(--dim)">(${pct>0?'+':''}${pct.toFixed(0)}%)</small>`:''}</td>
+      <td class="${dirClass(m.k,d)}" style="font-weight:700">${dstr(m.k,d)}</td><td style="color:var(--dim);font-size:12.5px">typed summaries — not tested</td>
       <td>${bs?fmt(m.k,bs.v)+' · '+bs.date:'—'}</td></tr>`}).filter(Boolean).join('');
   return `<div class="card">
     <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
       <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
     <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — HitTrax ${cat?'catching':'hitting'} progress report</h2>
     <div class="hint">${from} → ${to} · ${S.length} sessions${DB.player.age?' · age '+esc(DB.player.age):''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
-    <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Metric</th><th>First</th><th>Latest</th><th>Change</th><th>Best</th></tr></thead>
+    ${PR?`<div class="hint" style="margin-top:8px">${esc(PR.label)}. "Real" means the change holds up comparing visit against visit,
+      so one good day can't make it; maxes are single balls and top-quarter averages have no clean error bar, so neither is tested.</div>`:''}
+    <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Metric</th><th>Start</th><th>Now</th><th>Change</th><th>Read</th><th>Best</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     ${b?`<div class="note" style="margin-top:14px">Age-group reference (${b.label}): ${cat
       ?`pop time average ${b.avg[0].toFixed(2)}–${b.avg[1].toFixed(2)}s · good ${b.good.toFixed(2)}s · elite ${b.elite.toFixed(2)}s or quicker.`
@@ -3561,7 +3712,11 @@ function copyReport(){
     return;
   }
   const S=sorted(); let t=`${DB.player.name||'Player'} — HitTrax progress\n${S[0].date} → ${S[S.length-1].date} · ${S.length} sessions\n\n`;
-  KIND[VIEWKIND].metrics.forEach(m=>{const s2=series(m.k); if(s2.length<2)return;
+  const PR=progressRows(VIEWKIND);
+  if(PR){t+=PR.label+'\n\n';
+    PR.rows.forEach(r=>{if(r.f==null||r.l==null)return;
+      t+=`${r.m.n}: ${fmt(r.m.k,r.f)} → ${fmt(r.m.k,r.l)} (${dstr(r.m.k,r.d)}${r.read!=='—'?', '+r.read:''})\n`})}
+  else KIND[VIEWKIND].metrics.forEach(m=>{const s2=series(m.k); if(s2.length<2)return;
     const f=s2[0].v,l=s2[s2.length-1].v;
     t+=`${m.n}: ${fmt(m.k,f)} → ${fmt(m.k,l)} (${dstr(m.k,l-f)})\n`});
   navigator.clipboard.writeText(t).then(()=>alert('Report copied.'),()=>alert('Copy failed.'));
