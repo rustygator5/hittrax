@@ -1542,6 +1542,8 @@ function zoneAgg(balls){
             avg:o?o.avg:null, ab:o?o.ab:0, maxEV:Math.max(...evs)}});
   return out;
 }
+// how much of the plate a zone covers, in column units
+function zoneSpan(z){z=num(z); return (z>=10&&z<=13)?2.5:1}
 function zoneRow(z){
   z=num(z);
   if(z===10||z===11)return -1;            // above the zone
@@ -1571,8 +1573,8 @@ function zoneMap(balls){
     :(ZM==='avg'?(a.avg==null?'—':avg3(a.avg)):a.avgEV.toFixed(1)));
   const fmtEdge=v=>ZM==='count'?v:(ZM==='hha'?Math.round(v)+'%':(ZM==='avg'?avg3(v):v.toFixed(1)));
   // fit the lattice to whatever columns are in play once the calibration is applied
-  const poss=zs.map(zonePos);
-  const cLo=Math.min(-1.5,...poss.map(v=>v-0.5)), cHi=Math.max(1.5,...poss.map(v=>v+0.5));
+  const cLo=Math.min(-1.5,...zs.map(z=>zonePos(z)-zoneSpan(z)/2)),
+        cHi=Math.max( 1.5,...zs.map(z=>zonePos(z)+zoneSpan(z)/2));
   const W=460,H=446,P={l:10,r:10,t:24,b:26};   // room for the above/below captions
   const X=c=>P.l+(W-P.l-P.r)*((c-cLo)/(cHi-cLo));
   const cw=X(1)-X(0);
@@ -1580,14 +1582,14 @@ function zoneMap(balls){
   const Yr=r=>P.t+(r+1)*rh;
   let cells='';
   zs.sort((a,b)=>agg[b].count-agg[a].count).forEach(z=>{
-    const a=agg[z], x=X(zonePos(z))-cw/2, y=Yr(zoneRow(z)), thin=a.count<3;
-    cells+=`<g><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}"
+    const a=agg[z], w=cw*zoneSpan(z), x=X(zonePos(z))-w/2, y=Yr(zoneRow(z)), thin=a.count<3;
+    cells+=`<g><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${rh.toFixed(1)}"
       fill="${heat(a[ZM])}" stroke="#0b1220" stroke-width="1.5" opacity="${thin?.72:1}" rx="2"/>
       <text x="${(x+4).toFixed(1)}" y="${(y+12).toFixed(1)}" font-size="9" fill="rgba(255,255,255,.45)" font-weight="700">${z}</text>
-      <text x="${(x+cw/2).toFixed(1)}" y="${(y+rh/2+2).toFixed(1)}" text-anchor="middle" font-size="15" font-weight="800"
+      <text x="${(x+w/2).toFixed(1)}" y="${(y+rh/2+2).toFixed(1)}" text-anchor="middle" font-size="15" font-weight="800"
         fill="#fff" opacity="${thin?.78:1}">${val(a)}</text>
-      <text x="${(x+cw/2).toFixed(1)}" y="${(y+rh/2+16).toFixed(1)}" text-anchor="middle" font-size="9.5"
-        fill="rgba(255,255,255,.75)">${a.count} ball${a.count>1?'s':''}</text>
+      <text x="${(x+w/2).toFixed(1)}" y="${(y+rh/2+16).toFixed(1)}" text-anchor="middle" font-size="9.5"
+        fill="rgba(255,255,255,.75)">${a.count} ball${a.count>1?'s':''}${zoneSpan(z)>1?' · this half':''}</text>
       <title>Zone ${z} — ${a.count} ball${a.count>1?'s':''}, avg ${a.avgEV.toFixed(1)} mph, max ${a.maxEV.toFixed(1)} mph, ${Math.round(a.hha)}% hard hit</title></g>`;
   });
   const bx=X(-1.5), bw=X(1.5)-X(-1.5);
@@ -1653,7 +1655,7 @@ function outcomeCard(balls,where){
    HitTrax put outside the zone, which a zone-number remap could never reach. */
 function zonePos(z){
   z=num(z); if(z==null)return null;
-  const base={1:-1,4:-1,7:-1,2:0,5:0,8:0,3:1,6:1,9:1,10:-2,12:-2,11:2,13:2}[z];
+  const base={1:-1,4:-1,7:-1,2:0,5:0,8:0,3:1,6:1,9:1,10:-1.25,12:-1.25,11:1.25,13:1.25}[z];
   if(base==null)return null;
   const cal=DB.settings.zoneCal||'none';
   if(cal==='mirror')return -base;
@@ -1695,7 +1697,7 @@ function plateChart(balls){
       <line x1="${zx1.toFixed(1)}" y1="${yy.toFixed(1)}" x2="${zx2.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="rgba(233,238,251,.28)"/>`;}
   const dots=b.map((x,i)=>{
     const pos=zonePos(x.zone);
-    const jitter=((i*37)%100/100-0.5)*laneW*0.55;        // deterministic spread inside the lane
+    const jitter=((i*37)%100/100-0.5)*laneW*0.55*zoneSpan(x.zone);   // spread across what the zone covers
     const cx=(pos==null?laneX(2):colX(pos))+jitter, cy=Y(+x.poiy);
     return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${x.ev>0?heat(+x.ev):'#93a4c6'}"
       stroke="#0b1220" stroke-width="1.2" opacity=".92"><title>${(+x.ev||0).toFixed(1)} mph, met at ${(+x.poiy).toFixed(1)}" high${
