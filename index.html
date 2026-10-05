@@ -323,6 +323,47 @@ function startSync(){
   pollTimer=setInterval(()=>{if(!document.hidden)pullMerge()},12000);
 }
 
+/* ---------- import from a link ----------
+   A #add=<base64 json> link drops ready-made sessions in, so a box score read off a screenshot
+   doesn't have to be retyped. Always shown for confirmation first, and merged, never replacing. */
+function readImportLink(){
+  const m=(location.hash||'').match(/[#&]add=([A-Za-z0-9_\-+/=]+)/);
+  if(!m)return null;
+  try{
+    const json=decodeURIComponent(escape(atob(m[1].replace(/-/g,'+').replace(/_/g,'/'))));
+    const d=JSON.parse(json);
+    const list=Array.isArray(d)?d:(d&&d.sessions)||[];
+    return list.length?list:null;
+  }catch(e){return null}
+}
+function offerImport(list){
+  const lines=list.map(s=>{
+    const k=s.kind||'games', st=k==='games'?computeGame(s.summary||{}):null;
+    return `<li><b>${esc(s.date||'')}</b> · ${KIND[k]?KIND[k].label:k}${s.type?' · '+esc(s.type):''}`+
+      (st?` — ${st.h||0} for ${st.ab||0}, ${avg3(st.avg)}/${avg3(st.obp)}/${avg3(st.slg)}`:'')+`</li>`;
+  }).join('');
+  document.getElementById('dlgTitle').textContent='Add these to your tracker?';
+  document.getElementById('dlgBody').innerHTML=`
+    <div class="hint">Sent to you as a link. Nothing is replaced — these merge in alongside what you already have.</div>
+    <ul class="tight" style="margin-top:10px">${lines}</ul>
+    <div class="row" style="margin-top:16px">
+      <button class="btn" onclick="acceptImport()">Add ${list.length} entr${list.length>1?'ies':'y'}</button>
+      <button class="btn ghost" onclick="declineImport()">No thanks</button></div>`;
+  PENDING_IMPORT=list;
+  if(!dlg.open)dlg.showModal();
+}
+let PENDING_IMPORT=null;
+function acceptImport(){
+  const now=Date.now();
+  (PENDING_IMPORT||[]).forEach((s,i)=>{
+    DB.sessions.push({...s,id:uid(),kind:s.kind||'games',mode:s.mode||'game',mtime:now+i});
+  });
+  PENDING_IMPORT=null; save(); clearHash();
+  VIEWKIND='games'; dlg.close(); go('dash');
+}
+function declineImport(){PENDING_IMPORT=null; clearHash(); dlg.close();}
+function clearHash(){try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}
+
 /* ---------- account UI ---------- */
 function accountPanel(){
   if(!session)return `<div class="hint">Not signed in — sessions are saved on this device only.</div>`;
@@ -475,6 +516,14 @@ const GM=[
  {k:'sb',   n:'Stolen Bases',    u:'', d:0, dir:'up'},
  {k:'csPct',n:'Caught Stealing %',u:'%',d:0,dir:'up'},
  {k:'pb',   n:'Passed Balls',    u:'', d:0, dir:'down'},
+ {k:'qabPct',n:'Quality AB %',  u:'%',d:0, dir:'up'},
+ {k:'cPct', n:'Contact Rate',    u:'%',d:0, dir:'up'},
+ {k:'hhb',  n:'Hard-Hit Balls',  u:'', d:0, dir:'up'},
+ {k:'ldPct',n:'Line Drive %',    u:'%',d:0, dir:'up'},
+ {k:'gbPct',n:'Ground Ball %',   u:'%',d:0, dir:'down'},
+ {k:'babip',n:'BABIP',           u:'', d:3, dir:'up'},
+ {k:'psPA', n:'Pitches per PA',  u:'', d:1, dir:'up'},
+ {k:'fpct', n:'Fielding %',      u:'', d:3, dir:'up'},
  {k:'pa',   n:'Plate Appearances',u:'',d:0, dir:'flat'},
  {k:'ab',   n:'At-Bats',         u:'', d:0, dir:'flat'},
 ];
@@ -1047,12 +1096,16 @@ function popChart(T){
 /* ============================== games (GameChanger) ==============================
    The cage tells you what he can do; the box score tells you what he did. Counting stats are
    typed in (or read off a GameChanger screenshot), everything else is derived the standard way. */
-const GCOUNT=[
-  ['pa','PA'],['ab','AB'],['h','H'],['d','2B'],['t','3B'],['hr','HR'],
-  ['rbi','RBI'],['r','R'],['bb','BB'],['k','K'],['hbp','HBP'],['sf','SF'],
-  ['sb','SB'],['cs','CS'],
-  ['inn','Innings caught'],['pb','Passed balls'],['sba','SB allowed'],['csa','Runners caught']
+// Laid out in the same blocks GameChanger uses, so a row can be copied across in one pass.
+const GSECT=[
+  ['At the plate',[['gp','GP'],['pa','PA'],['ab','AB'],['h','H'],['d','2B'],['t','3B'],['hr','HR'],
+                   ['rbi','RBI'],['r','R'],['bb','BB'],['k','SO'],['hbp','HBP'],['sf','SF'],['sb','SB'],['cs','CS']]],
+  ['Advanced (optional)',[['qab','QAB'],['hhb','HHB'],['ldPct','LD%'],['fbPct','FB%'],['gbPct','GB%'],
+                   ['cPct','C%'],['babip','BABIP'],['risp','BA/RISP'],['ps','Pitches seen'],['lob','LOB']]],
+  ['Behind the plate',[['inn','Innings'],['pb','PB'],['sba','SB allowed'],['csa','CS']]],
+  ['In the field',[['po','PO'],['a','A'],['e','E']]],
 ];
+const GCOUNT=GSECT.flatMap(s=>s[1]);
 function computeGame(c){
   const n=k=>num(c[k])||0;
   const ab=n('ab'), h=n('h'), bb=n('bb'), hbp=n('hbp'), sf=n('sf');
@@ -1061,16 +1114,27 @@ function computeGame(c){
   const tb=singles+2*n('d')+3*n('t')+4*n('hr');
   const onBase=ab+bb+hbp+sf;
   const thrown=n('csa'), stolen=n('sba');
-  const s={...c, pa, tb, xbh:n('d')+n('t')+n('hr'),
+  const chances=n('po')+n('a')+n('e');
+  const s={...c, pa, tb, xbh:n('d')+n('t')+n('hr'), gp:n('gp')||1,
     avg:ab?h/ab:null, obp:onBase?(h+bb+hbp)/onBase:null, slg:ab?tb/ab:null,
     kPct:pa?n('k')/pa*100:null, bbPct:pa?bb/pa*100:null,
+    qabPct:(pa&&c.qab!=null)?n('qab')/pa*100:null,
+    psPA:(pa&&c.ps!=null)?n('ps')/pa:null,
+    fpct:chances?(n('po')+n('a'))/chances:null,
     csPct:(thrown+stolen)?thrown/(thrown+stolen)*100:null};
   s.ops=(s.obp!=null&&s.slg!=null)?s.obp+s.slg:null;
   return s;
 }
+const GRATE=['ldPct','fbPct','gbPct','cPct','babip','risp'];
 function sumGames(list){
   const tot={};
-  GCOUNT.forEach(([k])=>{const v=list.reduce((a,g)=>a+(num(g[k])||0),0); if(v)tot[k]=v});
+  GCOUNT.forEach(([k])=>{ if(GRATE.includes(k))return;
+    const v=list.reduce((a,g)=>a+(num(g[k])||0),0); if(v)tot[k]=v});
+  GRATE.forEach(k=>{                       // percentages: weight by plate appearances
+    const have=list.filter(g=>num(g[k])!=null);
+    const w=have.reduce((a,g)=>a+(num(g.pa)||1),0);
+    if(have.length&&w)tot[k]=have.reduce((a,g)=>a+num(g[k])*(num(g.pa)||1),0)/w;
+  });
   return computeGame(tot);
 }
 /* season to date, plus what the cage says he should be doing */
@@ -2119,15 +2183,12 @@ function clearParse(){PARSED=[];RAW=null;RAWNAME=null;PDATES=[];UNMAPPED=[]}
 function initLog(){
   const el=document.getElementById('logBody'), cat=LOGKIND==='catching';
   if(LOGKIND==='games'){
-    el.innerHTML=`<div class="hint" style="margin-bottom:10px">Straight off the GameChanger box score — leave anything blank that
-      doesn't apply. Rates are worked out from these.</div>
-      <label>At the plate</label>
-      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(92px,1fr));margin-bottom:14px">`+
-      GCOUNT.slice(0,14).map(([k,lab])=>`<div><label>${lab}</label><input type="number" min="0" step="1" id="s_${k}"></div>`).join('')+
-      `</div><label>Behind the plate <span class="hint" style="text-transform:none;letter-spacing:0">(skip if he didn't catch)</span></label>
-      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(92px,1fr))">`+
-      GCOUNT.slice(14).map(([k,lab])=>`<div><label>${lab}</label><input type="number" min="0" step="1" id="s_${k}"></div>`).join('')+
-      `</div>`;
+    el.innerHTML=`<div class="hint" style="margin-bottom:10px">Straight off the GameChanger box score — leave anything blank.
+      Put <b>GP</b> above 1 and this is a season-to-date line rather than one game; don't also enter those games separately.</div>`+
+      GSECT.map(([title,fields])=>`<label style="margin-top:12px">${esc(title)}</label>
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(88px,1fr))">`+
+        fields.map(([k,lab])=>`<div><label>${lab}</label><input type="number" step="any" id="s_${k}"></div>`).join('')+
+        `</div>`).join('');
     return;
   }
   if(LOGMODE==='detail'){
@@ -2747,6 +2808,7 @@ if((DB.parserV||0)!==PARSER_V){
   saveLocal();
 }
 render();
+(function(){const inc=readImportLink(); if(inc)setTimeout(()=>offerImport(inc),60)})();
 setSync(session?'saving':'local');
 startSync();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&session)pullMerge()});

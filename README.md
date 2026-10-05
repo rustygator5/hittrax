@@ -23,7 +23,15 @@ and season totals are derived: AVG, OBP, SLG, OPS, total bases, extra-base hits,
 Doubleheaders on one date add their counts together and the rates are recomputed, not averaged.
 
 GameChanger's CSV export is staff-only, so there's nothing to upload on a family account; the
-entry form takes the numbers off the screen (or off a screenshot) in under a minute.
+entry form takes the numbers off the screen (or off a screenshot) in under a minute. It covers
+the Standard and Advanced batting tabs plus the Catching and Fielding ones - QAB, HHB, C%,
+LD/FB/GB%, BABIP, BA/RISP, pitches seen, innings caught, PB, steals allowed, runners caught, PO,
+A, E - and derives QAB%, pitches per PA and fielding % from them. Set GP above 1 and the entry is
+a season-to-date line rather than a single game.
+
+Entries can also arrive as a link: a `#add=<base64 json>` URL opens a confirmation listing what
+it contains and merges it in on approval - handy when someone reads a box score off a screenshot
+for you. Nothing is replaced, and the link is stripped from the address bar afterwards.
 
 **Cage vs game** sits on that dashboard and is the point of the whole thing: HitTrax's simulated
 AVG and SLG next to the real ones, average exit velo next to strikeout rate, and best pop time
