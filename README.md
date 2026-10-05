@@ -110,6 +110,21 @@ Every way data enters - import links, backup files, the cloud, and local storage
 a whitelist of fields with known types before it is kept, and everything rendered is escaped.
 That matters more than usual here: the app shares an origin with the hub and the budget app.
 
+## Coaching layer
+- **Coach's read** (top of the dashboard) picks one thing going well and one thing to work on, with
+  a drill, from all three sides of his game - but only from evidence that holds up: changes that
+  cleared the noise, recent windows, age benchmarks, the feed-speed bat-speed gap, the cage-vs-game
+  batted-ball mix, and arm-care load (which outranks everything).
+- **Goals** - pick a measure and a target; "now" is read off his recent balls or throws (or the
+  season line for games), never one good day, with progress from where he was when it was set.
+  Goals sync between devices like sessions, deletes included.
+- **Cage vs game** compares like with like first - line-drive, fly-ball and ground-ball share, and
+  hard contact - and keeps results (simulated vs real AVG) separate, because those mostly measure
+  the opponent. It calls out the gap worth coaching, e.g. 67% fly balls in games vs 29% in the cage.
+- **Arm care** counts throws per week and flags a week 1.5x or more above his recent average.
+- **Spreads** - launch-angle spread and exchange spread track how repeatable the swing path and the
+  exchange are, not just their averages.
+
 ## Two disciplines
 A **Hitting / Catching** switch sits under the tabs (it appears once a catching session exists).
 Each discipline keeps its own sessions, trends, personal bests, benchmarks and report.

@@ -166,7 +166,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.4';
+const APP_BUILD='2026.10.05.5';
 const KEY='hittrax.tracker.v1';
 const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
 // Bump whenever the parser learns a new column — stored source files are re-read on boot so
@@ -264,6 +264,14 @@ function sanitizeDoc(d){
     if(SAFE_ID.test(id)&&f&&typeof f.text==='string'&&f.text.length<=MAXFILE)
       out.files[id]={name:shortText(f.name,120)||'file',text:f.text,ts:finite(f.ts)||0};
   });
+  out.goals=(Array.isArray(d.goals)?d.goals:[]).slice(0,100).map(g=>{
+    if(!g||!SAFE_ID.test(g.id||''))return null;
+    const kind=oneOf(g.kind,['hitting','catching','games']); if(!kind)return null;
+    if(!(GOALDEF[kind]||[]).some(x=>x[0]===g.metric))return null;
+    const target=finite(g.target), start=finite(g.start); if(target===undefined||start===undefined)return null;
+    return {id:g.id,kind,metric:g.metric,target,start,created:SAFE_DATE.test(g.created||'')?g.created:'',
+      by:SAFE_DATE.test(g.by||'')?g.by:null,mtime:finite(g.mtime)||1};
+  }).filter(Boolean);
   out.parserV=finite(d.parserV)||0;
   out.updatedAt=finite(d.updatedAt)||0;
   return out;
@@ -364,6 +372,10 @@ function mergeDocs(a,b){
   });
   Object.keys(del).forEach(id=>{const s=map[id]; if(s&&(s.mtime||0)>del[id])return; delete map[id]});
   out.sessions=Object.keys(map).map(k=>map[k]);
+  const gmap={};
+  [].concat(a.goals||[],b.goals||[]).forEach(g=>{const p=gmap[g.id]; if(!p||(g.mtime||0)>(p.mtime||0))gmap[g.id]=g});
+  Object.keys(del).forEach(id=>{const g=gmap[id]; if(g&&(g.mtime||0)>del[id])return; delete gmap[id]});
+  out.goals=Object.keys(gmap).map(k=>gmap[k]);
   out.deleted=Object.keys(del).map(id=>({id,ts:del[id]}));
   return out;
 }
@@ -1342,30 +1354,48 @@ function seasonCard(S){
 }
 /* the comparison neither app can show on its own */
 function cageVsGameCard(){
-  const games=DB.sessions.filter(s=>kindOf(s)==='games').map(s=>sessionStats(s));
+  const games=DB.sessions.filter(s=>kindOf(s)==='games'&&dispo(s)!=='out').map(s=>sessionStats(s));
   if(!games.length)return'';
-  const t=sumGames(games);
-  const hit=DB.sessions.filter(s=>kindOf(s)==='hitting').flatMap(s=>s.balls||[]);
-  const o=outcomeLine(hit);
-  const st=hit.length?computeFromBalls(hit,HH()):null;
-  const catching=DB.sessions.filter(s=>kindOf(s)==='catching').flatMap(s=>s.throws||[]);
-  const cst=catching.length?computeFromThrows(catching):null;
-  if(!o&&!cst)return'';
-  const row=(label,cage,game,note)=>`<tr><td>${label}</td><td style="font-weight:700">${cage}</td>
-    <td style="font-weight:700">${game}</td><td style="color:var(--dim);white-space:normal">${note}</td></tr>`;
-  let rows='';
-  if(o&&t.avg!=null)rows+=row('Batting average',avg3(o.avg),avg3(t.avg),
-    'Cage AVG is HitTrax simulating a defence — treat the gap as the cost of real pitching and real fielders.');
-  if(o&&t.slg!=null)rows+=row('Slugging',avg3(o.slg),avg3(t.slg),'');
-  if(st&&t.pa)rows+=row('Contact quality',fmt('avgEV',st.avgEV)+' mph avg',
-    (t.kPct!=null?Math.round(t.kPct)+'% K':'—'),'Exit velo only counts when he puts it in play.');
-  if(cst&&t.csPct!=null)rows+=row('Throwing',fmt('bestPop',cst.bestPop)+'s best pop',
-    Math.round(t.csPct)+'% caught',`${t.csa||0} of ${(t.csa||0)+(t.sba||0)} runners in games.`);
-  if(!rows)return'';
+  const g=sumGames(games);
+  const hit=sorted('hitting').flatMap(s=>s.balls||[]);
+  const cst=(()=>{const T=sorted('catching').flatMap(s=>s.throws||[]); return T.length?computeFromThrows(T):null})();
+  if(!hit.length&&!cst)return'';
+  const c=hit.length?computeFromBalls(hit,HH()):null, o=outcomeLine(hit);
+  // balls in play in games, the denominator for every game rate below
+  const gBIP=Math.max(0,(g.ab||0)-(g.k||0)-(g.hr||0)+(g.sf||0));
+  const thin=gBIP<10;
+  const pct=v=>v==null?'—':Math.round(v)+'%';
+  const row=(label,cage,game,note,strong)=>`<tr><td>${label}</td><td style="font-weight:700">${cage}</td>
+    <td style="font-weight:700">${game}</td><td style="color:var(--dim);white-space:normal;font-size:13px">${note||''}</td></tr>`;
+  let proc='', out='', reads=[];
+  if(c){
+    if(g.ldPct!=null)proc+=row('Line drives',pct(c.ld),pct(g.ldPct),'');
+    if(g.fbPct!=null)proc+=row('Fly balls',pct(c.fb),pct(g.fbPct),'');
+    if(g.gbPct!=null)proc+=row('Ground balls',pct(c.gb),pct(g.gbPct),'Game types are the scorekeeper\u2019s call — loose at this level.');
+    if(g.hhb!=null&&gBIP)proc+=row('Hard contact',pct(c.hha)+' <small style="color:var(--dim)">hard-hit</small>',
+      pct(g.hhb/gBIP*100)+' <small style="color:var(--dim)">HHB</small>','Cage = exit velo over the line; game = scored line drives and hard grounders. Same idea, different ruler.');
+    // the read worth having: where the batted-ball mix flips between cage and game
+    if(g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)reads.push(`<b>He gets under the ball in games:</b> ${pct(g.fbPct)} fly balls against ${pct(c.fb)} in the cage. Live pitching is beating him on top of the ball — game-speed machine rounds with a line-drive focus close that gap faster than more front toss.`);
+    if(g.gbPct!=null&&c.gb!=null&&g.gbPct-c.gb>=20)reads.push(`<b>He rolls over in games:</b> ${pct(g.gbPct)} ground balls against ${pct(c.gb)} in the cage — usually early on off-speed or out front. Work on staying back against changing speeds.`);
+    if(g.ldPct!=null&&c.ld!=null&&c.ld-g.ldPct>=20)reads.push(`<b>The cage line drives aren't showing up yet:</b> ${pct(c.ld)} in the cage, ${pct(g.ldPct)} in games.`);
+  }
+  if(o&&g.avg!=null)out+=row('Batting average',avg3(o.avg),avg3(g.avg),'Cage AVG is HitTrax simulating a defence against a soft feed — this gap mostly measures the opponent, not him.');
+  if(o&&g.slg!=null)out+=row('Slugging',avg3(o.slg),avg3(g.slg),'');
+  let thr='';
+  if(cst&&g.csPct!=null)thr=row('Throwing',fmt('bestPop',cst.bestPop)+'s best pop',pct(g.csPct)+' caught',
+    `${g.csa||0} of ${(g.csa||0)+(g.sba||0)} runners. Caught-stealing also depends on the pitcher's time to the plate and the tag.`);
+  const gameOnly=[];
+  if(g.cPct!=null)gameOnly.push(`contact rate ${pct(g.cPct)}`);
+  if(g.kPct!=null)gameOnly.push(`strikeouts ${pct(g.kPct)} of PA`);
+  if(g.qabPct!=null)gameOnly.push(`quality at-bats ${pct(g.qabPct)}`);
+  const head='<thead><tr><th>Measure</th><th>Cage</th><th>Games</th><th></th></tr></thead>';
   return `<div class="card"><h2>Cage vs game</h2>
-   <div class="hint">What the HitTrax work says he can do, against what the box score says he did</div>
-   <div class="scroll"><table><thead><tr><th>Measure</th><th>Cage</th><th>Games</th><th></th></tr></thead>
-   <tbody>${rows}</tbody></table></div></div>`;
+   <div class="hint">What he does in the cage against what he does against live pitching${thin?` — only ${gBIP} balls in play in games so far, so read the game side loosely`:''}</div>
+   ${reads.length?`<div class="note" style="margin-top:10px">${reads.join('<br><br>')}</div>`:''}
+   ${proc?`<label style="margin-top:14px">How he hits the ball — comparable</label><div class="scroll"><table>${head}<tbody>${proc}</tbody></table></div>`:''}
+   ${out?`<label style="margin-top:14px">Results — depend on who he's facing</label><div class="scroll"><table>${head}<tbody>${out}${thr}</tbody></table></div>`:(thr?`<div class="scroll"><table>${head}<tbody>${thr}</tbody></table></div>`:'')}
+   ${gameOnly.length?`<div class="hint" style="margin-top:10px">Games only (HitTrax can't measure these): ${gameOnly.join(' · ')}.</div>`:''}
+  </div>`;
 }
 
 /* ============================== throw-downs ==============================
@@ -2172,11 +2202,11 @@ function vDash(){
     const isPB=bs&&bs.id===last.id&&S.length>1;
     return `<div class="tile"><div class="k">${MK[k].n}${isPB?'<span class="pb">PB</span>':''}</div>
       <div class="v">${fmt(k,v)}<small>${MK[k].u}</small></div>
-      <div class="d ${dirClass(k,d)}">${gm?'<span class="flat">this game</span>'
+      <div class="d ${dirClass(k,d)}">${gm?`<span class="flat">${num(st.gp)>1?'season line ('+st.gp+' games)':'this game'}</span>`
         :(d===undefined?'<span class="flat">too few to compare</span>'
         :(d===null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'))}</div></div>`;
   }).join('');
-  return syncBanner()+backfillBanner()+`
+  return syncBanner()+backfillBanner()+coachSummaryCard()+`
   <div class="card">
     <div class="row" style="align-items:baseline">
       <div><h2>Latest session${last.solo?' <span class="chip a">separate round</span>'
@@ -2203,10 +2233,11 @@ function vDash(){
   ${cat?workloadCard():''}
   ${(cat||gm)?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
+  ${goalsCard(VIEWKIND)}
   ${(()=>{if(VIEWKIND==='hitting'&&series('batSpeed').length>=2)TRENDDEF.hitting='batSpeed';else if(VIEWKIND==='hitting')TRENDDEF.hitting='maxEV';return''})()}
   <div class="card"><h2>${MK[TRENDDEF[VIEWKIND]].n} ${gm?'— season to date':'trend'}</h2>
     <div class="hint">${gm?'Season line after each game — one game is too few plate appearances to read on its own'
-      :'Each dot is a session, sized by how many balls it holds · dashed blue = rolling average weighted by sample size'}</div>
+      :`Each dot is a session, sized by how many ${cat?'throws':'balls'} it holds · dashed blue = rolling average weighted by sample size`}</div>
     ${lineChart(series(TRENDDEF[VIEWKIND]),TRENDDEF[VIEWKIND])}
     <div style="margin-top:10px"><button class="btn ghost" onclick="go('trends')">All trends</button></div>
   </div>
@@ -2529,6 +2560,7 @@ function rollMetrics(kind,rows){
     {k:'avgExch', label:'Avg exchange',     type:'mean',u:'s',  d:2,dir:'down',f:x=>num(x.exch)>0.2?num(x.exch):null},
     {k:'avgVelo', label:'Avg arm strength', type:'mean',u:'mph',d:1,dir:'up',  f:x=>num(x.velo)>15?num(x.velo):null},
     {k:'outPct',  label:'Projected outs',   type:'prop',u:'%',  d:0,dir:'up',  set:x=>!!x.outcome,f:x=>x.outcome==='out'},
+    {k:'exchSD',  label:'Exchange spread',  type:'sd',  u:'s',  d:2,dir:'down',f:x=>num(x.exch)>0.2?num(x.exch):null},
   ];
   const ps=rows.map(x=>num(x.pitch)).filter(v=>v>0).sort((a,b)=>a-b);
   const pRef=ps.length?ps[Math.floor(ps.length/2)]:null;
@@ -2540,6 +2572,7 @@ function rollMetrics(kind,rows){
     {k:'ld',    label:'Line-drive rate',type:'prop',u:'%',  d:0,dir:'up',set:x=>!!type(x),f:x=>type(x)==='ld'},
     {k:'gb',    label:'Ground-ball rate',type:'prop',u:'%', d:0,dir:'down',set:x=>!!type(x),f:x=>type(x)==='gb'},
     {k:'avgLA', label:'Avg launch angle',type:'mean',u:'°', d:1,dir:'win',f:la},
+    {k:'laSD',  label:'Launch angle spread',type:'sd',u:'°', d:1,dir:'down',f:la},
   ];
   if(pRef!=null){
     list.splice(1,0,{k:'adjEV',label:`Exit velo at a ${Math.round(pRef)} mph pitch`,type:'mean',u:'mph',d:1,dir:'up',
@@ -2566,6 +2599,7 @@ function wilson(x,n){                       // honest interval for a rate on a s
 function windowStat(m,win){
   if(m.type==='prop'){const s=win.filter(m.set); return wilson(s.filter(m.f).length,s.length)}
   const vals=win.map(m.f).filter(v=>v!=null);
+  if(m.type==='sd'){const s=sdOf(vals,4); return s==null?null:{v:s,n:vals.length}}
   if(m.type==='top'){
     if(vals.length<4)return null;
     const top=vals.sort((a,b)=>b-a).slice(0,Math.max(1,Math.round(vals.length*0.25)));
@@ -2649,7 +2683,7 @@ function rollingView(){
   let verdict;
   if(V.need)verdict=`<div class="hint">Comparing where he started with now needs two windows that don't share a ball —
     ${2*N} ${unit}; you have ${rows.length}. The line still shows the shape.</div>`;
-  else if(!V.r)verdict=`<div class="hint">Top-quarter averages don't have a clean confidence band — read the line's direction rather than a verdict.</div>`;
+  else if(!V.r)verdict=`<div class="hint">${m.type==='sd'?'Spreads':'Top-quarter averages'} don't have a clean confidence band here — read the line's direction rather than a verdict.</div>`;
   else{
     const good=moveGood({dir:m.dir,diff:V.r.diff,from:V.r.from,to:V.r.to});
     verdict=`<div class="note${V.r.sig?'':' warn'}" style="margin-top:10px">${V.r.sig
@@ -2665,6 +2699,149 @@ function rollingView(){
       <div class="tile"><div class="k">Now</div><div class="v" style="font-size:22px">${f((V.now||pts[pts.length-1]).v)}</div><div class="d flat">last ${N}${band(V.now||pts[pts.length-1])}</div></div>
       <div class="tile"><div class="k">${unit.replace(/^./,c=>c.toUpperCase())} logged</div><div class="v" style="font-size:22px">${rows.length}</div></div>
     </div>${verdict}</div>`;
+}
+
+/* ============================== goals ==============================
+   A target, where he was when it was set, and where he is now — "now" read off a recent
+   window of balls or throws (or the season line for games), never one lucky session. */
+const GOALDEF={
+  hitting:[['avgEV','Avg exit velo','mph',1,'up'],['batSpeed','Bat speed (est.)','mph',1,'up'],['hha','Hard-hit rate','%',0,'up'],
+           ['sweet','Sweet-spot rate','%',0,'up'],['ld','Line-drive rate','%',0,'up'],['gb','Ground-ball rate','%',0,'down'],
+           ['laSD','Launch angle spread','°',1,'down']],
+  catching:[['avgPop','Avg pop time','s',2,'down'],['avgExch','Avg exchange','s',2,'down'],['exchSD','Exchange spread','s',2,'down'],
+            ['avgVelo','Avg arm strength','mph',1,'up'],['outPct','Projected outs','%',0,'up']],
+  games:[['avg','Batting average','',3,'up'],['obp','On-base','',3,'up'],['ops','OPS','',3,'up'],['kPct','Strikeout rate','%',0,'down'],
+         ['bbPct','Walk rate','%',0,'up'],['qabPct','Quality AB %','%',0,'up']],
+};
+const goalMeta=(kind,k)=>{const d=(GOALDEF[kind]||[]).find(x=>x[0]===k); return d?{k:d[0],label:d[1],u:d[2],d:d[3],dir:d[4]}:null};
+// where he is now on a goal metric
+function goalCurrent(kind,k){
+  if(kind==='games'){const G=sorted('games').map(s=>sessionStats(s)); if(!G.length)return null;
+    const t=sumGames(G); const v=num(t[k]); return v==null?null:{v,basis:`season, ${t.pa||0} PA`}}
+  const rows=rollRows(kind); if(!rows.length)return null;
+  const N=Math.min(kind==='catching'?15:30,rows.length);
+  const win=rows.slice(rows.length-N);
+  if(k==='laSD'){const v=sdOf(win.map(x=>num(x.la)).filter(v=>v!=null),4); return v==null?null:{v,basis:`last ${N} balls`}}
+  if(k==='exchSD'){const v=sdOf(win.map(x=>num(x.exch)).filter(v=>v>0.2),4); return v==null?null:{v,basis:`last ${N} throws`}}
+  const m=rollMetrics(kind,rows).find(x=>x.k===k); if(!m)return null;
+  const st=windowStat(m,win); return st?{v:st.v,basis:`last ${N} ${kind==='catching'?'throws':'balls'}`}:null;
+}
+const goalFmt=(m,v)=>v==null?'—':(m.u===''?avg3(v):(m.u==='%'?Math.round(v)+'%':v.toFixed(m.d)+' '+m.u));
+function goalsCard(kind){
+  const list=(DB.goals||[]).filter(g=>g.kind===kind);
+  const defs=GOALDEF[kind]||[];
+  const rows=list.map(g=>{
+    const m=goalMeta(kind,g.metric); if(!m)return'';
+    const cur=goalCurrent(kind,g.metric);
+    const span=g.target-g.start;
+    let prog=0, hit=false;
+    if(cur&&span!==0){prog=Math.max(0,Math.min(1,(cur.v-g.start)/span)); hit=(m.dir==='down')?cur.v<=g.target:cur.v>=g.target}
+    const due=g.by?` · by ${esc(g.by)}`:'';
+    return `<div style="padding:10px 0;border-bottom:1px solid rgba(39,57,92,.55)">
+      <div class="row" style="align-items:baseline;gap:8px">
+        <b>${esc(m.label)}</b><span class="hint">${m.dir==='down'?'down to':'up to'} ${goalFmt(m,g.target)}${due}</span>
+        ${hit?'<span class="chip g">reached</span>':''}
+        <button class="btn ghost" style="margin-left:auto;padding:3px 9px;font-size:12px" onclick="delGoal('${esc(g.id)}')">Remove</button></div>
+      <div class="bar" style="margin-top:7px"><i style="width:${Math.round(prog*100)}%;${hit?'background:linear-gradient(90deg,#2fbf71,#7fe0ab)':''}"></i></div>
+      <div class="hint" style="margin-top:4px">started at ${goalFmt(m,g.start)} · now ${cur?goalFmt(m,cur.v)+` <small>(${esc(cur.basis)})</small>`:'—'} · ${Math.round(prog*100)}% of the way</div>
+    </div>`}).join('');
+  return `<div class="card"><h2>Goals</h2>
+    <div class="hint">Something to chase. "Now" is read off his recent ${kind==='games'?'season line':(kind==='catching'?'throws':'balls')}, not one good day.</div>
+    ${rows||'<div class="hint" style="margin-top:8px">No goals yet for this side of his game.</div>'}
+    <div class="row" style="margin-top:12px;gap:8px;align-items:flex-end">
+      <div style="flex:2 1 170px"><label>Measure</label><select id="g_metric">${defs.map(d=>`<option value="${d[0]}">${esc(d[1])}</option>`).join('')}</select></div>
+      <div style="flex:1 1 90px"><label>Target</label><input id="g_target" type="number" step="any" placeholder="${kind==='games'?'.300':''}"></div>
+      <div style="flex:1 1 130px"><label>By (optional)</label><input id="g_by" type="date"></div>
+      <button class="btn sec" onclick="addGoal('${kind}')">Add goal</button></div>
+  </div>`;
+}
+function addGoal(kind){
+  const k=document.getElementById('g_metric').value, m=goalMeta(kind,k);
+  let target=num(document.getElementById('g_target').value), by=document.getElementById('g_by').value||null;
+  if(!m||target==null){alert('Pick a measure and type a target.');return}
+  if(m.u===''&&target>1)target=target/1000;             // ".300" or "300" both mean .300
+  const cur=goalCurrent(kind,k);
+  if(!cur){alert('There is no data for that measure yet — log a session first so the goal has a starting point.');return}
+  const already=(m.dir==='down')?cur.v<=target:cur.v>=target;
+  if(already&&!confirm(`He's already at ${goalFmt(m,cur.v)} — set the goal anyway?`))return;
+  DB.goals=DB.goals||[];
+  DB.goals.push({id:uid(),kind,metric:k,target,start:cur.v,created:localDate(),by:SAFE_DATE.test(by||'')?by:null,mtime:Date.now()});
+  save(); render();
+}
+function delGoal(id){
+  if(!confirm('Remove this goal?'))return;
+  DB.goals=(DB.goals||[]).filter(g=>g.id!==id);
+  DB.deleted.push({id,ts:Date.now()});
+  save(); render();
+}
+
+/* ============================== coach's summary ==============================
+   One strength, one thing to work on, one drill — pulled from all three sides of his game and
+   only from evidence the app trusts (changes that cleared the noise, recent windows, benchmarks). */
+function coachSummaryCard(){
+  const S=[], F=[], basis=[];
+  const push=(arr,w,src,text,drill)=>arr.push({w,src,text,drill});
+  // --- hitting ---
+  const hitRows=rollRows('hitting');
+  if(hitRows.length){
+    basis.push(`${hitRows.length} batted balls`);
+    const mv=movingTests('hitting');
+    (mv.tests||[]).filter(r=>r.sig&&moveGood(r)).forEach(r=>push(S,3,'Hitting',`${r.label} up ${Math.abs(r.diff).toFixed(r.pct?0:1)}${r.pct?' pts':' mph'} — beyond the noise.`));
+    (mv.tests||[]).filter(r=>r.sig&&!moveGood(r)).forEach(r=>push(F,2.5,'Hitting',`${r.label} slipping (${r.pct?Math.round(r.from)+'% → '+Math.round(r.to)+'%':r.from.toFixed(1)+' → '+r.to.toFixed(1)}).`,'Back to the basics that produced the earlier numbers — short, focused tee rounds before live work.'));
+    const recent=hitRows.slice(-30), st=computeFromBalls(recent,recent[recent.length-1]._hh)||{};
+    if(recent.length>=15){
+      if(num(st.sweet)!=null&&st.sweet<45)push(F,2,'Hitting',`Only ${Math.round(st.sweet)}% of recent balls are in the 8–32° window.`,'Line-drive-only rounds off the tee: score a point only for balls that would clear the infield on a line.');
+      if(num(st.gb)>=45)push(F,2,'Hitting',`${Math.round(st.gb)}% ground balls lately — the barrel is working down.`,'High-tee, top-half-of-the-zone work: drive it, don’t lift it.');
+    }
+    // feed-speed bat drop on the latest hitting date
+    const last=sorted('hitting').slice(-1)[0];
+    if(last){
+      const R=roundsOfDate(last).filter(r=>dispo(r)!=='out').map(r=>({p:num(r.pitch),b:num(sessionStats(r).batSpeed)})).filter(x=>x.p!=null&&x.b!=null);
+      if(R.length>=2){const fast=R.reduce((a,c)=>c.p>a.p?c:a), slow=R.reduce((a,c)=>c.p<a.p?c:a);
+        if(fast.p-slow.p>=5&&fast.b-slow.b>=3)push(F,3,'Hitting',`Swings about ${(fast.b-slow.b).toFixed(1)} mph slower on the ${Math.round(slow.p)} mph feed than the ${Math.round(fast.p)} mph one.`,'Alternate slow front toss with machine rounds. On the slow ones, same intent and same speed — count a slowed-down swing as a miss.')}
+      const bat=num(sessionStats(last).batSpeed), bb=batBench(DB.player.age);
+      if(bat!=null&&bb&&bat>=bb.lo)push(S,1.5,'Hitting',`Bat speed about ${bat.toFixed(0)} mph — inside the ${bb.label} range.`);
+    }
+  }
+  // --- catching ---
+  const thrRows=rollRows('catching');
+  if(thrRows.length){
+    basis.push(`${thrRows.length} clean throws`);
+    const mv=movingTests('catching');
+    (mv.tests||[]).filter(r=>r.sig&&moveGood(r)).forEach(r=>push(S,3,'Catching',`${r.label} improved (${r.from.toFixed(2)} → ${r.to.toFixed(2)}) — beyond the noise.`));
+    const st=computeFromThrows(thrRows.slice(-20))||{}, pb=popBench(DB.player.age);
+    const allPop=computeFromThrows(sorted('catching').flatMap(s=>s.throws||[]))||{};
+    if(pb&&num(allPop.bestPop)!=null&&allPop.bestPop<=pb.elite)push(S,2,'Catching',`Best pop ${allPop.bestPop.toFixed(2)}s — elite range for age ${pb.label}.`);
+    if(num(st.avgExch)!=null&&st.avgExch<0.8)push(S,2,'Catching',`Quick exchange: ${st.avgExch.toFixed(2)}s average.`);
+    if(num(st.avgExch)>=0.95)push(F,2.5,'Catching',`Exchange is the slow part (${st.avgExch.toFixed(2)}s).`,'Exchange-only reps: receive to release, no throw, timed. Ten clean ones before any throw-downs.');
+    if(num(st.avgExch)!=null&&st.avgExch<0.8&&pb&&num(st.avgPop)>pb.good)push(F,2,'Catching',`Pop time is all ball flight now — the exchange is already quick.`,'Arm strength is the lever: a long-toss progression twice a week, as his arm allows.');
+    if(num(allPop.cleanPct)!=null&&allPop.cleanPct<80)push(F,2,'Catching',`${Math.round(allPop.cleanPct)}% of throw-down reps are clean.`,'Slow it down: ten throw-downs focused only on a clean transfer before adding speed.');
+  }
+  // arm care outranks everything
+  const wl=(()=>{const html=workloadCard(); return /Spike:/.test(html)})();
+  if(wl)push(F,5,'Catching','Throwing load jumped this week.','Cut the next session’s throws roughly in half and build back up over a week.');
+  // --- games ---
+  const G=sorted('games').map(s=>sessionStats(s));
+  if(G.length){
+    const g=sumGames(G); basis.push(`${g.pa||0} game PA`);
+    if((g.pa||0)>=9&&g.kPct!=null&&g.kPct<=15)push(S,2,'Games',`Puts the ball in play — ${Math.round(g.kPct)}% strikeouts.`);
+    if((g.pa||0)>=9&&g.bbPct!=null&&g.bbPct>=15)push(S,1.5,'Games',`Patient — walks in ${Math.round(g.bbPct)}% of plate appearances.`);
+    if((g.pa||0)>=9&&g.kPct!=null&&g.kPct>=30)push(F,2.5,'Games',`Striking out in ${Math.round(g.kPct)}% of plate appearances.`,'Two-strike approach: choke up, widen the stance, protect the plate.');
+    if(hitRows.length){
+      const c=computeFromBalls(hitRows,HH())||{}, bip=Math.max(0,(g.ab||0)-(g.k||0)-(g.hr||0)+(g.sf||0));
+      if(bip>=5&&g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)push(F,3,'Games',`Gets under it in games: ${Math.round(g.fbPct)}% fly balls vs ${Math.round(c.fb)}% in the cage.`,'Game-speed machine rounds scored line-drive only — the soft feed in the cage isn’t testing the swing he needs.');
+    }
+  }
+  if(!S.length&&!F.length)return'';
+  S.sort((a,b)=>b.w-a.w); F.sort((a,b)=>b.w-a.w);
+  const s=S[0], f=F[0];
+  const tile=(label,cls,x)=>x?`<div class="tile" style="flex:1 1 240px"><div class="k">${label} <span class="chip ${cls}" style="font-size:9px">${esc(x.src)}</span></div>
+    <div style="font-size:15px;font-weight:700;margin-top:6px;line-height:1.35">${x.text}</div></div>`:'';
+  return `<div class="card" style="border-color:rgba(250,70,22,.45)"><h2>Coach's read</h2>
+    <div class="hint">One thing going well, one thing to work on — only from evidence that holds up (${esc(basis.join(' · '))})</div>
+    <div class="row" style="margin-top:10px;gap:10px">${tile('Going well','g',s)}${tile('Work on','a',f)}</div>
+    ${f&&f.drill?`<div class="note" style="margin-top:10px"><b>Drill:</b> ${f.drill}</div>`:''}
+  </div>`;
 }
 
 function pbCard(){
