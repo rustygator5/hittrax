@@ -34,7 +34,7 @@ header{position:sticky;top:0;z-index:30;background:rgba(11,18,32,.92);backdrop-f
 .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dim2);flex:none}
 .pill.synced .dot{background:var(--green)} .pill.saving .dot{background:var(--amber)}
 .pill.offline .dot{background:var(--red)} .pill.local .dot{background:var(--dim2)}
-@media(max-width:520px){.pill span.lbl{display:none}.pill{padding:6px}}
+@media(max-width:520px){.pill{padding:5px 9px;font-size:11px}}
 nav{display:flex;gap:4px;overflow-x:auto;padding:0 0 8px;scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
 nav button{flex:none;background:transparent;border:1px solid transparent;color:var(--dim);
@@ -1450,6 +1450,19 @@ function dashPicker(){
     ${E.map(e=>`<button class="${e.id===sel.id?'on':''}" onclick="DASHSEL='${e.id}';render()">${label(e)}</button>`).join('')}
   </div></div>`;
 }
+function syncBanner(){
+  if(!DB.sessions.length)return'';
+  if(!session)return `<div class="card note warn" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div><b>Saved on this device only.</b> Sign in with your Wilson Dashboard account here <i>and</i> on your phone,
+      and every session shows up on both.</div>
+    <button class="btn" style="margin-left:auto" onclick="openAccount()">Sign in to sync</button></div>`;
+  if(syncState==='setup')return `<div class="card note warn"><b>Signed in, but the cloud table is missing.</b>
+    Run <span class="mono">supabase-setup.sql</span> once in Supabase — everything here is safe on this device meanwhile.</div>`;
+  if(syncState==='offline')return `<div class="card note warn" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div><b>Offline.</b> Changes are saved here and will upload when the connection is back.</div>
+    <button class="btn sec" style="margin-left:auto" onclick="pullMerge()">Try now</button></div>`;
+  return'';
+}
 function backfillBanner(){
   if(!BACKFILLED)return'';
   const n=BACKFILLED;
@@ -1464,7 +1477,9 @@ function vDash(){
     <p style="color:var(--dim);max-width:460px;margin:8px auto 16px">${cat
       ?'Upload a HitTrax catching export — pop time, exchange, arm strength and accuracy per throw — or type the session summary.'
       :'Log a HitTrax session — type in the summary numbers off the report screen, or upload the CSV and everything gets calculated for you.'}</p>
-    <button class="btn" onclick="LOGKIND='${VIEWKIND}';go('log')">Log first session</button></div></div>`
+    <button class="btn" onclick="LOGKIND='${VIEWKIND}';go('log')">Log first session</button>
+    ${!session?`<div class="hint" style="margin-top:16px">Already logged sessions on another device?
+      <a href="#" onclick="openAccount();return false">Sign in</a> and they'll appear here.</div>`:''}</div></div>`
     + refCard();
   const last=dashPick(), st=sessionStats(last);
   const b=cat?popBench(DB.player.age):bench(DB.player.age);
@@ -1476,7 +1491,7 @@ function vDash(){
       <div class="v">${fmt(k,v)}<small>${MK[k].u}</small></div>
       <div class="d ${dirClass(k,d)}">${d==null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'}</div></div>`;
   }).join('');
-  return backfillBanner()+`
+  return syncBanner()+backfillBanner()+`
   <div class="card">
     <div class="row" style="align-items:baseline">
       <div><h2>Latest session${last.solo?' <span class="chip a">separate round</span>'
