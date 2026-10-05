@@ -124,7 +124,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 @media print{
   body{background:#fff;color:#000}
-  header,nav,.noprint{display:none!important}
+  header,nav,.noprint,.seg,select,canvas{display:none!important}   /* controls and animations don't print */
   .card{border-color:#ccc;background:#fff;break-inside:avoid}
   .tile{background:#f4f4f4;border-color:#ddd}
   .k,.dim,.hint{color:#555!important}
@@ -1338,9 +1338,32 @@ function flightRecord(id){
 const ZGRID=[[1,2,3],[4,5,6],[7,8,9]], ZOUT={10:'tl',11:'tr',12:'bl',13:'br'};
 const ZMETRICS={avgEV:'Avg exit velo',hha:'Hard-hit %',avg:'Batting avg',count:'Balls'};
 let ZM='avgEV';
+/* The facility's plate reference can sit off-centre, which shows up as every pitch landing in
+   one column with nothing down the middle. This remaps the zone number for display only — the
+   measurements are untouched, and it is off unless the user has verified the offset at the cage. */
+const MIRROR={1:3,2:2,3:1,4:6,5:5,6:4,7:9,8:8,9:7,10:11,11:10,12:13,13:12};
+const SHIFT={'-1':{3:2,2:1,6:5,5:4,9:8,8:7},'1':{1:2,2:3,4:5,5:6,7:8,8:9}};
+function zoneFix(z){
+  z=num(z); if(z==null)return null;
+  const c=DB.settings.zoneCal||'none';
+  if(c==='mirror')return MIRROR[z]!=null?MIRROR[z]:z;
+  if(c==='left'||c==='right'){const m=SHIFT[c==='left'?'-1':'1']; return m[z]!=null?m[z]:z}
+  return z;
+}
+const zoneCalLabel=()=>({none:'',mirror:'left/right mirrored',left:'shifted one column left',right:'shifted one column right'})[DB.settings.zoneCal||'none'];
+// how lopsided is the pitch feed? the honest read on a shifted-looking zone
+function zoneBalance(balls){
+  const zs=balls.map(b=>zoneFix(b.zone)).filter(z=>z!=null);
+  if(zs.length<8)return null;
+  const col=z=>[1,4,7,10,12].includes(z)?'L':([3,6,9,11,13].includes(z)?'R':'C');
+  const n={L:0,C:0,R:0}; zs.forEach(z=>n[col(z)]++);
+  const inZone=zs.filter(z=>z>=1&&z<=9).length;
+  return {n:zs.length,L:n.L,C:n.C,R:n.R,inZone,
+    lop:Math.max(n.L,n.R)/zs.length*100, side:n.R>=n.L?'right':'left'};
+}
 function zoneAgg(balls){
   const by={};
-  balls.forEach(b=>{const z=num(b.zone); if(z==null)return;
+  balls.forEach(b=>{const z=zoneFix(b.zone); if(z==null)return;
     (by[z]=by[z]||[]).push(b)});
   const out={};
   Object.keys(by).forEach(z=>{const g=by[z], evs=g.map(x=>+x.ev), o=outcomeLine(g);
@@ -1472,7 +1495,7 @@ function plateChart(balls){
     zone+=`<line x1="${xx.toFixed(1)}" y1="${Y(zt).toFixed(1)}" x2="${xx.toFixed(1)}" y2="${Y(zb).toFixed(1)}" stroke="rgba(233,238,251,.28)"/>
       <line x1="${zx1.toFixed(1)}" y1="${yy.toFixed(1)}" x2="${zx2.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="rgba(233,238,251,.28)"/>`;}
   const dots=b.map((x,i)=>{
-    const lane=COL[num(x.zone)]!=null?COL[num(x.zone)]:2;
+    const lane=COL[zoneFix(x.zone)]!=null?COL[zoneFix(x.zone)]:2;
     const jitter=((i*37)%100/100-0.5)*laneW*0.62;        // deterministic spread inside the lane
     const cx=laneX(lane)+jitter, cy=Y(+x.poiy);
     return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${x.ev>0?heat(+x.ev):'#93a4c6'}"
@@ -1528,7 +1551,7 @@ function plateCard(balls){
 function zoneSplit(balls){
   const b=balls.filter(x=>num(x.zone)!=null);
   if(!b.length)return'';
-  const group=inZone=>b.filter(x=>inZone?(+x.zone>=1&&+x.zone<=9):(+x.zone>=10));
+  const group=inZone=>b.filter(x=>{const z=zoneFix(x.zone); return inZone?(z>=1&&z<=9):(z>=10)});
   const rows=[['In the zone',group(true)],['Out of the zone',group(false)]].filter(r=>r[1].length);
   if(rows.length<2)return'';
   const cell=(g)=>{const st=computeFromBalls(g,HH()), o=outcomeLine(g);
@@ -1648,6 +1671,19 @@ function laVeloCard(){
    <div class="hint">Average exit velo in each launch-angle band — ${S.length>1?`the last ${S.length} sessions on top of each other, newest first`:'this session'}</div>
    ${chart}</div>`;
 }
+function zoneBalanceNote(balls){
+  const b=zoneBalance(balls); if(!b)return'';
+  const bits=[];
+  if(b.lop>=70)bits.push(`<b>${Math.round(b.lop)}% of pitches crossed on the ${b.side} side</b>`);
+  if(b.C===0&&b.n>=10)bits.push('nothing at all down the middle');
+  if(b.inZone/b.n<0.35)bits.push(`only ${Math.round(b.inZone/b.n*100)}% were in the zone`);
+  if(!bits.length)return'';
+  return `<div class="note warn" style="margin-top:12px">${bits.join(' · ')}.
+    That is either where the machine or feeder is aimed, or the plate reference at the facility is off-centre —
+    the export can't tell those apart. <b>Quick check:</b> have someone feed one ball deliberately down the middle
+    and see which zone HitTrax logs it in. If a centred pitch comes back as a side column, the setup is offset and you
+    can correct it under Player &amp; Data → Strike-zone calibration${zoneCalLabel()?` (currently ${zoneCalLabel()})`:''}.</div>`;
+}
 function zoneCard(balls,where){
   if(!balls.some(b=>num(b.zone)!=null))return'';
   const n=balls.filter(b=>num(b.zone)!=null).length;
@@ -1655,7 +1691,7 @@ function zoneCard(balls,where){
      <div><h2>Strike-zone heat map</h2><div class="hint">${n} batted ball${n>1?'s':''} ${where}</div></div>
      <div class="seg" style="margin-left:auto">${Object.keys(ZMETRICS).map(k=>
        `<button class="${ZM===k?'on':''}" onclick="ZM='${k}';render()">${ZMETRICS[k]}</button>`).join('')}</div></div>
-   ${zoneMap(balls)}${zoneSplit(balls)}</div>`;
+   ${zoneMap(balls)}${zoneBalanceNote(balls)}${zoneSplit(balls)}</div>`;
 }
 function mixBar(s){
   const parts=[['gb','#f2b13c','GB'],['ld','#2fbf71','LD'],['fb','#3d6df0','FB'],['pu','#ef4d5a','PU']]
@@ -2430,6 +2466,8 @@ function vReport(){
       ?`pop time average ${b.avg[0].toFixed(2)}–${b.avg[1].toFixed(2)}s · good ${b.good.toFixed(2)}s · elite ${b.elite.toFixed(2)}s or quicker.`
       :`average ${b.avg[0]}–${b.avg[1]} mph · good ${b.good[0]}–${b.good[1]} mph · elite ${b.elite}+ mph max exit velo.`}</div>`:''}
    </div>
+   ${cat?'':(()=>{const balls=S.flatMap(x=>x.balls||[]);
+     return thirdsCard(balls,`across ${S.length} session${S.length>1?'s':''}`)+zoneCard(balls,`across ${S.length} session${S.length>1?'s':''}`);})()}
    ${cat?`<div class="card"><h2>Average pop time</h2>${lineChart(series('avgPop'),'avgPop',b?{band:[b.elite,b.good]}:{})}</div>
      <div class="card"><h2>Arm strength</h2>${lineChart(series('maxVelo'),'maxVelo')}</div>`
    :`<div class="card"><h2>Max exit velo</h2>${lineChart(series('maxEV'),'maxEV',b?{band:[b.good[0],b.good[1]]}:{})}</div>
@@ -2460,7 +2498,14 @@ function vData(){
      <div><label>Level / team</label><input id="p_level" value="${esc(p.level||'')}" placeholder="e.g. 12U travel"></div>
      <div><label>Bats</label><select id="p_bats"><option ${p.bats==='R'?'selected':''}>R</option><option ${p.bats==='L'?'selected':''}>L</option><option ${p.bats==='S'?'selected':''}>S</option></select></div>
      <div><label>Hard-hit threshold (mph)</label><input id="p_hh" type="number" value="${esc(DB.settings.hardHit||'')}" placeholder="auto: ${hardHitDefault(p.age)}"></div>
+     <div><label>Strike-zone calibration</label><select id="p_zcal">
+       ${[['none','Use HitTrax zones as exported'],['mirror','Mirror left ↔ right'],
+          ['left','Shift one column left'],['right','Shift one column right']]
+         .map(o=>`<option value="${o[0]}"${(DB.settings.zoneCal||'none')===o[0]?' selected':''}>${o[1]}</option>`).join('')}
+     </select></div>
    </div>
+   <div class="hint" style="margin-top:8px">Only change the calibration if a ball fed down the middle at the cage comes back
+     in a side column. It relabels zones for display — the exit velo, angles and distances are never touched.</div>
    <div style="margin-top:12px"><button class="btn" onclick="savePlayer()">Save</button></div></div>
 
    <div class="card"><h2>Sync across devices</h2>
@@ -2516,6 +2561,7 @@ function savePlayer(){
   const g=id=>document.getElementById(id).value.trim();
   DB.player={name:g('p_name'),age:g('p_age'),level:g('p_level'),bats:document.getElementById('p_bats').value};
   const hh=num(g('p_hh')); DB.settings.hardHit=hh||null;
+  const zc=document.getElementById('p_zcal'); if(zc)DB.settings.zoneCal=zc.value;
   save(); render(); alert('Saved.');
 }
 function dl(name,text,type){

@@ -138,6 +138,15 @@ Three views of the same thing:
 - **By pitch location** - in-zone (1-9) against chased pitches (10-13): balls, avg EV, hard-hit %,
   LD%, and the simulated AVG and SLG for each.
 
+### Strike-zone calibration
+A facility's plate reference can sit off-centre, which shows up as every pitch landing in one
+column with nothing down the middle. The heat-map card calls that out when it sees it ("91% of
+pitches crossed on the right side · nothing at all down the middle · only 31% were in the zone")
+and suggests the test that settles it: feed one ball deliberately down the middle and see which
+zone HitTrax logs. If a centred pitch comes back in a side column, Player & Data →
+**Strike-zone calibration** can mirror the columns or shift them one to the left or right. It
+relabels zones for display only - exit velo, angles and distances are never touched.
+
 ### Strike-zone heat map
 HitTrax tags every pitch with a zone (1-9 inside the strike zone, 10-13 the out-of-zone
 quadrants). The dashboard draws those as a heat map across every logged session - inner 3x3 grid
