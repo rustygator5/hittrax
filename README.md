@@ -89,6 +89,14 @@ anything. So:
   guessing.
 - **Trends** size each dot by its sample, hollow when too small to trust, and the rolling average
   is weighted by sample size so a 5-ball session can't swing it.
+- **Rolling by ball** (a toggle on Trends) ignores sessions entirely and walks through every batted
+  ball or clean throw in order: each point is the last N, drawn with its 95% band (a t-interval for
+  averages, a Wilson interval for rates) against a strip showing where he started. The window
+  defaults to the biggest that leaves two non-overlapping windows, and the readout tests the first
+  window against the latest one - "Real improvement", "Not yet distinguishable", or how many more
+  balls it needs. Covers exit velo, exit velo at a common pitch speed, bat speed, hard-hit,
+  sweet-spot, line-drive and ground-ball rates and launch angle; pop time, exchange, arm strength
+  and projected outs for catching.
 - **Personal bests** for averages and rates need a minimum sample (10 balls, 8 throws); single-event
   bests like max exit velo or best pop count from any session.
 - **Games** trend as the season line after each game, because one game is 3-5 plate appearances.

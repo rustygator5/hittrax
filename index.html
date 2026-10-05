@@ -2428,7 +2428,9 @@ function coachCard(S){
       ${quiet.length?`<details style="margin-top:12px"><summary class="hint" style="cursor:pointer">Inside the noise (${quiet.length})</summary>
         <ul class="tight">${quiet.map(r=>`<li>${moveLine(r)} — would need about ±${r.pct?r.need.toFixed(0)+' pts':r.need.toFixed((MK[r.k]&&MK[r.k].u==='s')?2:1)+((MK[r.k]&&MK[r.k].u==='°')?'°':' '+(MK[r.k]?MK[r.k].u:''))} to count</li>`).join('')}</ul></details>`:''}`;
   }
-  return `<div class="card"><h2>What's moving</h2>${body}${coachCues(kind,M2)}</div>`;
+  const door=kind==='games'?'':`<div style="margin-top:12px"><button class="btn ghost" style="padding:6px 12px;font-size:13px"
+    onclick="TRENDMODE='rolling';go('trends')">See the whole history as a rolling chart →</button></div>`;
+  return `<div class="card"><h2>What's moving</h2>${body}${coachCues(kind,M2)}${door}</div>`;
 }
 /* drill cues, read off the recent window rather than one short session */
 function coachCues(kind,M2){
@@ -2456,6 +2458,159 @@ function coachCues(kind,M2){
   if(!cues.length)return'';
   return `<div style="margin-top:14px"><span class="chip">Cues from your last ${rows.length} ${kind==='catching'?'throws':'balls'}</span>
     <ul class="tight">${cues.map(c=>'<li>'+c+'</li>').join('')}</ul></div>`;
+}
+
+/* ============================== rolling progress ==============================
+   Sessions come in every size, so a per-session line lets a 5-ball day count as much as a
+   50-ball one. This view ignores sessions and walks through every batted ball (or clean throw)
+   in order: each point is the last N balls, with its 95% band. When today's band clears where he
+   started, the change is real — and you can see exactly when it happened. */
+const ROLLW={hitting:[15,30,50],catching:[10,15,25]};
+// null = pick automatically: the biggest window that still leaves two that don't overlap
+let TRENDMODE='session', ROLLN={hitting:null,catching:null}, ROLLK={hitting:'avgEV',catching:'avgPop'};
+const dayBQof=s=>{const p=(s.parts||[s]).find(x=>x.bq); return p?p.bq:Q()};
+function rollMetrics(kind,rows){
+  if(kind==='catching')return [
+    {k:'avgPop',  label:'Avg pop time',     type:'mean',u:'s',  d:2,dir:'down',f:x=>num(x.pop)},
+    {k:'avgExch', label:'Avg exchange',     type:'mean',u:'s',  d:2,dir:'down',f:x=>num(x.exch)>0.2?num(x.exch):null},
+    {k:'avgVelo', label:'Avg arm strength', type:'mean',u:'mph',d:1,dir:'up',  f:x=>num(x.velo)>15?num(x.velo):null},
+    {k:'outPct',  label:'Projected outs',   type:'prop',u:'%',  d:0,dir:'up',  set:x=>!!x.outcome,f:x=>x.outcome==='out'},
+  ];
+  const ps=rows.map(x=>num(x.pitch)).filter(v=>v>0).sort((a,b)=>a-b);
+  const pRef=ps.length?ps[Math.floor(ps.length/2)]:null;
+  const type=x=>x.btype||bucket(x.la), la=x=>num(x.la);
+  const list=[
+    {k:'avgEV', label:'Avg exit velo',  type:'mean',u:'mph',d:1,dir:'up',f:x=>num(x.ev)},
+    {k:'hha',   label:'Hard-hit rate',  type:'prop',u:'%',  d:0,dir:'up',set:()=>true,f:x=>+x.ev>=x._hh},
+    {k:'sweet', label:'Sweet-spot rate',type:'prop',u:'%',  d:0,dir:'up',set:x=>la(x)!=null,f:x=>la(x)>=8&&la(x)<=32},
+    {k:'ld',    label:'Line-drive rate',type:'prop',u:'%',  d:0,dir:'up',set:x=>!!type(x),f:x=>type(x)==='ld'},
+    {k:'gb',    label:'Ground-ball rate',type:'prop',u:'%', d:0,dir:'down',set:x=>!!type(x),f:x=>type(x)==='gb'},
+    {k:'avgLA', label:'Avg launch angle',type:'mean',u:'°', d:1,dir:'win',f:la},
+  ];
+  if(pRef!=null){
+    list.splice(1,0,{k:'adjEV',label:`Exit velo at a ${Math.round(pRef)} mph pitch`,type:'mean',u:'mph',d:1,dir:'up',
+      f:x=>num(x.pitch)>0?+x.ev-x._bq*(+x.pitch-pRef):null});
+    list.splice(2,0,{k:'batSpeed',label:'Bat speed (est., top quarter)',type:'top',u:'mph',d:1,dir:'up',
+      f:x=>num(x.pitch)>0?(+x.ev-x._bq*(+x.pitch))/(1+x._bq):null});
+  }
+  return list;
+}
+function rollRows(kind){
+  const rows=[];
+  sorted(kind).forEach(s=>{
+    const tag={_d:s.date,_hh:dayHHof(s),_bq:dayBQof(s)};
+    if(kind==='hitting')(s.balls||[]).forEach(b=>{if(num(b.ev)>0)rows.push({...b,...tag})});
+    if(kind==='catching')cleanThrows(s.throws).forEach(x=>rows.push({...x,...tag}));
+  });
+  return rows;
+}
+function wilson(x,n){                       // honest interval for a rate on a small sample
+  if(!n)return null; const z=Z95, p=x/n, den=1+z*z/n;
+  const c=(p+z*z/(2*n))/den, h=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n))/den;
+  return {v:p*100,lo:(c-h)*100,hi:(c+h)*100,n};
+}
+function windowStat(m,win){
+  if(m.type==='prop'){const s=win.filter(m.set); return wilson(s.filter(m.f).length,s.length)}
+  const vals=win.map(m.f).filter(v=>v!=null);
+  if(m.type==='top'){
+    if(vals.length<4)return null;
+    const top=vals.sort((a,b)=>b-a).slice(0,Math.max(1,Math.round(vals.length*0.25)));
+    return {v:top.reduce((a,c)=>a+c,0)/top.length,n:vals.length};     // no clean band for a top-quarter mean
+  }
+  const mv=meanVar(vals); if(!mv)return null;
+  const h=Z95*Math.sqrt(mv.v/mv.n); return {v:mv.m,lo:mv.m-h,hi:mv.m+h,n:mv.n};
+}
+function rollingSeries(kind,m,N,rows){
+  const pts=[];
+  for(let i=N;i<=rows.length;i++){const st=windowStat(m,rows.slice(i-N,i)); if(st)pts.push({i,...st,d:rows[i-1]._d})}
+  return pts;
+}
+// start vs now, on windows that don't share a single ball
+function rollVerdict(m,N,rows){
+  if(rows.length<2*N)return {need:true};
+  const a=rows.slice(0,N), b=rows.slice(rows.length-N);
+  let r=null;
+  if(m.type==='prop'){const A=a.filter(m.set), B=b.filter(m.set); r=testProp(A.filter(m.f).length,A.length,B.filter(m.f).length,B.length)}
+  else if(m.type==='mean')r=testMean(a.map(m.f).filter(v=>v!=null),b.map(m.f).filter(v=>v!=null));
+  return {r,start:windowStat(m,a),now:windowStat(m,b)};
+}
+function rollingChart(pts,m,rows,N){
+  const W=720,H=300,P={l:46,r:16,t:18,b:42};
+  const tot=rows.length;
+  const X=i=>P.l+(W-P.l-P.r)*((i-1)/Math.max(1,tot-1));
+  const base=pts[0];
+  const ys=pts.flatMap(p=>[p.v,p.lo,p.hi]).concat(base?[base.lo,base.hi]:[]).filter(v=>v!=null&&isFinite(v));
+  let lo=Math.min(...ys), hi=Math.max(...ys); if(hi-lo<1e-6){hi+=1;lo-=1}
+  const pad=(hi-lo)*0.1; lo-=pad; hi+=pad;
+  if(m.u==='%'){lo=Math.max(0,lo);hi=Math.min(100,hi)}
+  const Y=v=>P.t+(H-P.t-P.b)*(1-(v-lo)/(hi-lo));
+  let g='';
+  for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4, y=Y(v);
+    g+=`<line x1="${P.l}" x2="${W-P.r}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#27395c"/>
+      <text x="${P.l-6}" y="${(y+4).toFixed(1)}" fill="#6c7fa5" font-size="10" text-anchor="end">${v.toFixed(m.u==='s'?2:(m.u==='%'?0:1))}</text>`}
+  // session boundaries, labelled sparingly
+  let lastX=-99, firstIdx={};
+  rows.forEach((r,i)=>{if(!(r._d in firstIdx))firstIdx[r._d]=i+1});
+  Object.keys(firstIdx).forEach(d=>{const x=X(firstIdx[d]);
+    g+=`<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${P.t}" y2="${H-P.b}" stroke="rgba(147,164,198,.18)" stroke-dasharray="2 4"/>`;
+    if(x-lastX>52){g+=`<text x="${(x+3).toFixed(1)}" y="${H-P.b+14}" fill="#6c7fa5" font-size="9.5">${esc(d.slice(5))}</text>`; lastX=x}});
+  // where he started: the first full window and its band
+  if(base&&base.lo!=null)g+=`<rect x="${P.l}" y="${Y(base.hi).toFixed(1)}" width="${W-P.l-P.r}" height="${Math.max(1,Y(base.lo)-Y(base.hi)).toFixed(1)}"
+      fill="rgba(147,164,198,.10)"/><line x1="${P.l}" x2="${W-P.r}" y1="${Y(base.v).toFixed(1)}" y2="${Y(base.v).toFixed(1)}"
+      stroke="rgba(147,164,198,.55)" stroke-dasharray="5 4"/><text x="${W-P.r-4}" y="${(Y(base.v)-5).toFixed(1)}" fill="#93a4c6" font-size="9.5" text-anchor="end">where he started</text>`;
+  // the band, then the line
+  const band=pts.filter(p=>p.lo!=null);
+  if(band.length>1)g+=`<path d="M${band.map(p=>X(p.i).toFixed(1)+' '+Y(p.hi).toFixed(1)).join(' L')} L${band.slice().reverse().map(p=>X(p.i).toFixed(1)+' '+Y(p.lo).toFixed(1)).join(' L')} Z"
+      fill="rgba(250,70,22,.16)"/>`;
+  if(pts.length>1)g+=`<path d="M${pts.map(p=>X(p.i).toFixed(1)+' '+Y(p.v).toFixed(1)).join(' L')}" fill="none" stroke="#FA4616" stroke-width="2.5" stroke-linejoin="round"/>`;
+  const end=pts[pts.length-1];
+  if(end)g+=`<circle cx="${X(end.i).toFixed(1)}" cy="${Y(end.v).toFixed(1)}" r="4.5" fill="#FA4616" stroke="#0b1220" stroke-width="1.5"><title>Now: ${end.v.toFixed(m.d)}${m.u==='%'?'%':' '+m.u}</title></circle>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}
+    <text x="${P.l}" y="${H-6}" fill="#6c7fa5" font-size="10">${KIND[VIEWKIND].label==='Catching'?'throw':'ball'} number → (each point = the last ${N})</text></svg>
+   <div class="legend"><span><i style="background:#FA4616"></i>last ${N}</span>
+     ${band.length?'<span><i style="background:rgba(250,70,22,.35)"></i>95% band</span>':''}
+     ${base&&base.lo!=null?'<span><i style="background:rgba(147,164,198,.4)"></i>where he started</span>':''}</div>`;
+}
+function rollingView(){
+  const kind=VIEWKIND;
+  if(kind==='games')return `<div class="card"><h2>Rolling progress</h2><div class="hint">Games come in as box-score lines, so
+    there's no plate-appearance order to roll through — the season line on the session view is the equivalent.</div></div>`;
+  const rows=rollRows(kind), ms=rollMetrics(kind,rows);
+  let m=ms.find(x=>x.k===ROLLK[kind])||ms[0]; ROLLK[kind]=m.k;
+  const opts=ROLLW[kind];
+  let N=ROLLN[kind];
+  if(!opts.includes(N)){const fit=opts.filter(n=>rows.length>=2*n); N=fit.length?fit[fit.length-1]:opts[0]}
+  const unit=kind==='catching'?'clean throws':'batted balls';
+  const head=`<div class="row" style="align-items:center;gap:10px;margin:10px 0">
+      <select onchange="ROLLK.${kind}=this.value;render()" style="max-width:280px">
+        ${ms.map(x=>`<option value="${x.k}" ${x.k===m.k?'selected':''}>${esc(x.label)}</option>`).join('')}</select>
+      <div class="seg">${opts.map(n=>`<button class="${n===N?'on':''}" onclick="ROLLN.${kind}=${n};render()">last ${n}</button>`).join('')}</div>
+    </div>`;
+  if(rows.length<N)return `<div class="card"><h2>Rolling progress</h2>${head}
+    <div class="hint">Needs at least ${N} ${unit} to draw the first window — you have ${rows.length}.
+    Pick a shorter window, or log another session.</div></div>`;
+  const pts=rollingSeries(kind,m,N,rows), V=rollVerdict(m,N,rows);
+  const f=v=>v==null?'—':(m.u==='%'?Math.round(v)+'%':v.toFixed(m.d)+' '+m.u);
+  const band=s=>s&&s.lo!=null?` <small style="color:var(--dim)">(${f(s.lo).replace(/ (mph|s|°)$/,'')}–${f(s.hi)})</small>`:'';
+  let verdict;
+  if(V.need)verdict=`<div class="hint">Comparing where he started with now needs two windows that don't share a ball —
+    ${2*N} ${unit}; you have ${rows.length}. The line still shows the shape.</div>`;
+  else if(!V.r)verdict=`<div class="hint">Top-quarter averages don't have a clean confidence band — read the line's direction rather than a verdict.</div>`;
+  else{
+    const good=moveGood({dir:m.dir,diff:V.r.diff,from:V.r.from,to:V.r.to});
+    verdict=`<div class="note${V.r.sig?'':' warn'}" style="margin-top:10px">${V.r.sig
+      ?`<b>${good?'Real improvement':'Real slide'}:</b> ${esc(m.label.toLowerCase())} went from ${f(V.r.from)} to ${f(V.r.to)} — a change of ${Math.abs(V.r.diff).toFixed(m.d)}${m.u==='%'?' pts':' '+m.u}, beyond the ±${V.r.need.toFixed(m.d)} that noise could explain.`
+      :`<b>Not yet distinguishable:</b> ${esc(m.label.toLowerCase())} moved from ${f(V.r.from)} to ${f(V.r.to)}, but noise alone could explain up to ±${V.r.need.toFixed(m.d)}${m.u==='%'?' pts':' '+m.u}. Keep logging.`}</div>`;
+  }
+  return `<div class="card"><h2>Rolling progress</h2>
+    <div class="hint">Every ${unit.replace(/s$/,'')} in order, sessions ignored — each point is the last ${N}, with its 95% band.
+      When today's band clears where he started, the change is real.</div>
+    ${head}${rollingChart(pts,m,rows,N)}
+    <div class="tiles" style="margin-top:14px">
+      <div class="tile"><div class="k">Where he started</div><div class="v" style="font-size:22px">${f(V.start?V.start.v:pts[0].v)}</div><div class="d flat">first ${N}${band(V.start||pts[0])}</div></div>
+      <div class="tile"><div class="k">Now</div><div class="v" style="font-size:22px">${f((V.now||pts[pts.length-1]).v)}</div><div class="d flat">last ${N}${band(V.now||pts[pts.length-1])}</div></div>
+      <div class="tile"><div class="k">${unit.replace(/^./,c=>c.toUpperCase())} logged</div><div class="v" style="font-size:22px">${rows.length}</div></div>
+    </div>${verdict}</div>`;
 }
 
 function pbCard(){
@@ -2808,7 +2963,13 @@ function savedMsg(fresh,again){
 }
 
 /* ---------- trends ---------- */
+function trendModeBar(){
+  return `<div class="seg" style="margin-bottom:4px">
+    <button class="${TRENDMODE==='session'?'on':''}" onclick="TRENDMODE='session';render()">By session</button>
+    <button class="${TRENDMODE==='rolling'?'on':''}" onclick="TRENDMODE='rolling';render()">Rolling by ${VIEWKIND==='catching'?'throw':'ball'}</button></div>`;
+}
 function vTrends(){
+  if(TRENDMODE==='rolling')return `<div style="margin-top:14px">${trendModeBar()}</div>`+rollingView();
   const S=series(TRENDK);
   const avail=KIND[VIEWKIND].metrics.filter(m=>series(m.k).length>0);
   if(!avail.length)return '<div class="card"><div class="empty">Log a session first.</div></div>';
@@ -2819,7 +2980,7 @@ function vTrends(){
   if((TRENDK==='avgPop'||TRENDK==='bestPop')&&pb)band=[pb.elite,pb.good];
   const first=S[0],lastp=S[S.length-1];
   const chg=S.length>1?lastp.v-first.v:null;
-  return `<div class="card">
+  return `<div style="margin-top:14px">${trendModeBar()}</div><div class="card">
    <h2>Trends</h2><div class="hint">${VIEWKIND==='games'
      ?'Season to date after each game. Counting stats are running totals.'
      :'Dots are sized by sample — hollow ones are too small to trust. The dashed blue rolling average is weighted by sample size, so a 5-ball session can’t swing it.'}</div>
