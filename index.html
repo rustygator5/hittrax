@@ -332,12 +332,19 @@ function readImportLink(){
   try{
     const json=decodeURIComponent(escape(atob(m[1].replace(/-/g,'+').replace(/_/g,'/'))));
     const d=JSON.parse(json);
-    const list=Array.isArray(d)?d:(d&&d.sessions)||[];
-    return list.length?list:null;
+    const list=Array.isArray(d)?d:((d&&d.sessions)||[]);
+    const set=(!Array.isArray(d)&&d&&d.settings)||null;
+    return (list.length||set)?{list,set}:null;
   }catch(e){return null}
 }
-function offerImport(list){
-  const lines=list.map(s=>{
+function offerImport(payload){
+  const list=payload.list||[], set=payload.set||null;
+  const setLines=set?Object.keys(set).map(k=>{
+    const name={zoneCal:'Strike-zone calibration',hardHit:'Hard-hit threshold'}[k]||k;
+    const val=k==='zoneCal'?({none:'use HitTrax zones as exported',mirror:'mirror left ↔ right',
+      left:'shift one column left',right:'shift one column right'}[set[k]]||set[k]):set[k];
+    return `<li><b>Setting</b> · ${name} → ${esc(String(val))}</li>`;}).join(''):'';
+  const lines=setLines+list.map(s=>{
     const k=s.kind||'games', st=k==='games'?computeGame(s.summary||{}):null;
     return `<li><b>${esc(s.date||'')}</b> · ${KIND[k]?KIND[k].label:k}${s.type?' · '+esc(s.type):''}`+
       (st?` — ${st.h||0} for ${st.ab||0}, ${avg3(st.avg)}/${avg3(st.obp)}/${avg3(st.slg)}`:'')+`</li>`;
@@ -347,19 +354,22 @@ function offerImport(list){
     <div class="hint">Sent to you as a link. Nothing is replaced — these merge in alongside what you already have.</div>
     <ul class="tight" style="margin-top:10px">${lines}</ul>
     <div class="row" style="margin-top:16px">
-      <button class="btn" onclick="acceptImport()">Add ${list.length} entr${list.length>1?'ies':'y'}</button>
+      <button class="btn" onclick="acceptImport()">${list.length?`Add ${list.length} entr${list.length>1?'ies':'y'}`:'Apply'}</button>
       <button class="btn ghost" onclick="declineImport()">No thanks</button></div>`;
-  PENDING_IMPORT=list;
+  PENDING_IMPORT=payload;
   if(!dlg.open)dlg.showModal();
 }
 let PENDING_IMPORT=null;
 function acceptImport(){
-  const now=Date.now();
-  (PENDING_IMPORT||[]).forEach((s,i)=>{
+  const now=Date.now(), p=PENDING_IMPORT||{};
+  if(p.set)Object.assign(DB.settings,p.set);
+  (p.list||[]).forEach((s,i)=>{
     DB.sessions.push({...s,id:uid(),kind:s.kind||'games',mode:s.mode||'game',mtime:now+i});
   });
+  const wasGames=(p.list||[]).some(s=>(s.kind||'games')==='games');
   PENDING_IMPORT=null; save(); clearHash();
-  VIEWKIND='games'; dlg.close(); go('dash');
+  if(wasGames)VIEWKIND='games';
+  dlg.close(); go('dash');
 }
 function declineImport(){PENDING_IMPORT=null; clearHash(); dlg.close();}
 function clearHash(){try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}
@@ -1857,7 +1867,8 @@ function zoneCard(balls,where){
   if(!balls.some(b=>num(b.zone)!=null))return'';
   const n=balls.filter(b=>num(b.zone)!=null).length;
   return `<div class="card"><div class="row" style="align-items:baseline">
-     <div><h2>Strike-zone heat map</h2><div class="hint">${n} batted ball${n>1?'s':''} ${where}</div></div>
+     <div><h2>Strike-zone heat map${zoneCalLabel()?` <span class="chip a">${zoneCalLabel()}</span>`:''}</h2>
+       <div class="hint">${n} batted ball${n>1?'s':''} ${where}${zoneCalLabel()?' · zones relabelled for display, measurements untouched':''}</div></div>
      <div class="seg" style="margin-left:auto">${Object.keys(ZMETRICS).map(k=>
        `<button class="${ZM===k?'on':''}" onclick="ZM='${k}';render()">${ZMETRICS[k]}</button>`).join('')}</div></div>
    ${zoneMap(balls)}${zoneBalanceNote(balls)}${zoneSplit(balls)}</div>`;

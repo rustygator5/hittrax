@@ -30,7 +30,7 @@ A, E - and derives QAB%, pitches per PA and fielding % from them. Set GP above 1
 a season-to-date line rather than a single game.
 
 Entries can also arrive as a link: a `#add=<base64 json>` URL opens a confirmation listing what
-it contains and merges it in on approval - handy when someone reads a box score off a screenshot
+it contains - sessions, or a setting such as the strike-zone calibration - and applies it on approval - handy when someone reads a box score off a screenshot
 for you. Nothing is replaced, and the link is stripped from the address bar afterwards.
 
 **Cage vs game** sits on that dashboard and is the point of the whole thing: HitTrax's simulated
@@ -167,7 +167,9 @@ pitches crossed on the right side · nothing at all down the middle · only 31% 
 and suggests the test that settles it: feed one ball deliberately down the middle and see which
 zone HitTrax logs. If a centred pitch comes back in a side column, Player & Data →
 **Strike-zone calibration** can mirror the columns or shift them one to the left or right. It
-relabels zones for display only - exit velo, angles and distances are never touched.
+relabels zones for display only - exit velo, angles and distances are never touched - and while it
+is on, the heat-map card carries a badge saying so. Note the shift moves the in-zone columns; the
+above/below quadrants (10-13) are vertical calls and stay where they are.
 
 ### Strike-zone heat map
 HitTrax tags every pitch with a zone (1-9 inside the strike zone, 10-13 the out-of-zone
