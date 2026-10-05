@@ -168,8 +168,13 @@ and suggests the test that settles it: feed one ball deliberately down the middl
 zone HitTrax logs. If a centred pitch comes back in a side column, Player & Data →
 **Strike-zone calibration** can mirror the columns or shift them one to the left or right. It
 relabels zones for display only - exit velo, angles and distances are never touched - and while it
-is on, the heat-map card carries a badge saying so. Note the shift moves the in-zone columns; the
-above/below quadrants (10-13) are vertical calls and stay where they are.
+is on, the heat-map card carries a badge saying so.
+
+The heat map is drawn as a lattice of positions rather than HitTrax's fixed 13 cells, so a shift
+moves every cell including the out-of-zone ones: there is no "above middle" zone number, but there
+is an above-middle place on the plate, and the grid can draw it. The in-zone vs out-of-zone split
+is deliberately left alone, because zones 10-13 are vertical misses that a sideways shift should
+not rescue.
 
 ### Strike-zone heat map
 HitTrax tags every pitch with a zone (1-9 inside the strike zone, 10-13 the out-of-zone

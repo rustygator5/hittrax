@@ -1520,19 +1520,10 @@ let ZM='avgEV';
 /* The facility's plate reference can sit off-centre, which shows up as every pitch landing in
    one column with nothing down the middle. This remaps the zone number for display only — the
    measurements are untouched, and it is off unless the user has verified the offset at the cage. */
-const MIRROR={1:3,2:2,3:1,4:6,5:5,6:4,7:9,8:8,9:7,10:11,11:10,12:13,13:12};
-const SHIFT={'-1':{3:2,2:1,6:5,5:4,9:8,8:7},'1':{1:2,2:3,4:5,5:6,7:8,8:9}};
-function zoneFix(z){
-  z=num(z); if(z==null)return null;
-  const c=DB.settings.zoneCal||'none';
-  if(c==='mirror')return MIRROR[z]!=null?MIRROR[z]:z;
-  if(c==='left'||c==='right'){const m=SHIFT[c==='left'?'-1':'1']; return m[z]!=null?m[z]:z}
-  return z;
-}
 const zoneCalLabel=()=>({none:'',mirror:'left/right mirrored',left:'shifted one column left',right:'shifted one column right'})[DB.settings.zoneCal||'none'];
 // how lopsided is the pitch feed? the honest read on a shifted-looking zone
 function zoneBalance(balls){
-  const zs=balls.map(b=>zoneFix(b.zone)).filter(z=>z!=null);
+  const zs=balls.map(b=>num(b.zone)).filter(z=>z!=null);
   if(zs.length<8)return null;
   const col=z=>[1,4,7,10,12].includes(z)?'L':([3,6,9,11,13].includes(z)?'R':'C');
   const n={L:0,C:0,R:0}; zs.forEach(z=>n[col(z)]++);
@@ -1542,7 +1533,7 @@ function zoneBalance(balls){
 }
 function zoneAgg(balls){
   const by={};
-  balls.forEach(b=>{const z=zoneFix(b.zone); if(z==null)return;
+  balls.forEach(b=>{const z=num(b.zone); if(z==null)return;
     (by[z]=by[z]||[]).push(b)});
   const out={};
   Object.keys(by).forEach(z=>{const g=by[z], evs=g.map(x=>+x.ev), o=outcomeLine(g);
@@ -1551,55 +1542,66 @@ function zoneAgg(balls){
             avg:o?o.avg:null, ab:o?o.ab:0, maxEV:Math.max(...evs)}});
   return out;
 }
+function zoneRow(z){
+  z=num(z);
+  if(z===10||z===11)return -1;            // above the zone
+  if(z===12||z===13)return 3;             // below it
+  if(z>=1&&z<=3)return 0;
+  if(z>=4&&z<=6)return 1;
+  if(z>=7&&z<=9)return 2;
+  return null;
+}
+/* Laid out by position rather than by HitTrax's fixed 13 cells, so a calibration shift moves
+   the out-of-zone cells too — there is no "above middle" zone number, but there is an
+   above-middle place on the plate, and this grid can draw it. */
 function zoneMap(balls){
   const agg=zoneAgg(balls);
-  const zs=Object.keys(agg); if(!zs.length)return'';
+  const zs=Object.keys(agg).map(Number).filter(z=>zonePos(z)!=null&&zoneRow(z)!=null);
+  if(!zs.length)return'';
   const vals=zs.map(z=>agg[z][ZM]).filter(v=>v!=null&&!isNaN(v));
   if(!vals.length)return '<div class="hint">No data for that metric yet.</div>';
   const lo=Math.min(...vals), hi=Math.max(...vals);
-  const heat=v=>{ if(v==null)return'#111b2e';
+  const heat=v=>{ if(v==null||isNaN(v))return'#141f36';
     const f=hi>lo?(v-lo)/(hi-lo):0.6;
-    const stops=[[40,62,104],[61,109,240],[242,177,60],[250,70,22]];   // cool slate -> blue -> amber -> orange
+    const stops=[[40,62,104],[61,109,240],[242,177,60],[250,70,22]];
     const x=f*(stops.length-1), i=Math.min(stops.length-2,Math.floor(x)), k=x-i;
-    const c=stops[i].map((s,j)=>Math.round(s+(stops[i+1][j]-s)*k));
+    const c=stops[i].map((q,j)=>Math.round(q+(stops[i+1][j]-q)*k));
     return `rgb(${c[0]},${c[1]},${c[2]})`;};
   const val=a=>ZM==='count'?a.count:(ZM==='hha'?Math.round(a.hha)+'%'
     :(ZM==='avg'?(a.avg==null?'—':avg3(a.avg)):a.avgEV.toFixed(1)));
-  const tip=z=>{const a=agg[z];
-    return `Zone ${z}${a?` — ${a.count} ball${a.count>1?'s':''}, avg ${a.avgEV.toFixed(1)} mph, max ${a.maxEV.toFixed(1)} mph, ${Math.round(a.hha)}% hard hit`:' — no balls'}`};
-  const W=380,H=420, mx=72,my=74, iw=W-2*mx, ih=H-2*my;
-  // label a cell: value + sample size, dimmed when there are too few balls to mean anything
-  const text=(z,cx,cy,big)=>{const a=agg[z]; if(!a)return'';
-    const thin=a.count<3;
-    return `<text x="${cx}" y="${cy+1}" text-anchor="middle" font-size="${big?16:13}" font-weight="800"
-      fill="#fff" opacity="${thin?.75:1}">${val(a)}</text>
-      <text x="${cx}" y="${cy+15}" text-anchor="middle" font-size="9.5" fill="rgba(255,255,255,.75)">${a.count} ball${a.count>1?'s':''}</text>`};
-  const num=(z,x,y)=>`<text x="${x}" y="${y}" font-size="9" fill="rgba(255,255,255,.45)" font-weight="700">${z}</text>`;
-  // four out-of-zone quadrants, drawn as a ring so the strike zone sits in a hole, not on top
-  const quads=[[10,0,0,W/2,H/2],[11,W/2,0,W/2,H/2],[12,0,H/2,W/2,H/2],[13,W/2,H/2,W/2,H/2]];
-  let ring=quads.map(q=>`<rect x="${q[1]}" y="${q[2]}" width="${q[3]}" height="${q[4]}"
-      fill="${agg[q[0]]?heat(agg[q[0]][ZM]):'#111b2e'}" opacity="${agg[q[0]]?1:.5}"><title>${tip(q[0])}</title></rect>`).join('');
-  const corners={10:[mx/2,my/2],11:[W-mx/2,my/2],12:[mx/2,H-my/2],13:[W-mx/2,H-my/2]};
-  let ringText=Object.keys(corners).map(z=>text(z,corners[z][0],corners[z][1])).join('')
-    +`${num(10,6,14)}${num(11,W-14,14)}${num(12,6,H-6)}${num(13,W-14,H-6)}`;
-  let grid='';
-  ZGRID.forEach((row,r)=>row.forEach((z,c)=>{
-    const x=mx+c*iw/3, y=my+r*ih/3, w=iw/3, h=ih/3, a=agg[z];
-    grid+=`<g><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${a?heat(a[ZM]):'#141f36'}"
-      stroke="#0b1220" stroke-width="1.5" opacity="${a?1:.75}"><title>${tip(z)}</title></rect>
-      ${num(z,x+4,y+12)}${text(z,x+w/2,y+h/2,true)}</g>`;}));
+  const fmtEdge=v=>ZM==='count'?v:(ZM==='hha'?Math.round(v)+'%':(ZM==='avg'?avg3(v):v.toFixed(1)));
+  // fit the lattice to whatever columns are in play once the calibration is applied
+  const poss=zs.map(zonePos);
+  const cLo=Math.min(-1.5,...poss.map(v=>v-0.5)), cHi=Math.max(1.5,...poss.map(v=>v+0.5));
+  const W=460,H=446,P={l:10,r:10,t:24,b:26};   // room for the above/below captions
+  const X=c=>P.l+(W-P.l-P.r)*((c-cLo)/(cHi-cLo));
+  const cw=X(1)-X(0);
+  const rows=5, rh=(H-P.t-P.b)/rows;              // above, three zone rows, below
+  const Yr=r=>P.t+(r+1)*rh;
+  let cells='';
+  zs.sort((a,b)=>agg[b].count-agg[a].count).forEach(z=>{
+    const a=agg[z], x=X(zonePos(z))-cw/2, y=Yr(zoneRow(z)), thin=a.count<3;
+    cells+=`<g><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}"
+      fill="${heat(a[ZM])}" stroke="#0b1220" stroke-width="1.5" opacity="${thin?.72:1}" rx="2"/>
+      <text x="${(x+4).toFixed(1)}" y="${(y+12).toFixed(1)}" font-size="9" fill="rgba(255,255,255,.45)" font-weight="700">${z}</text>
+      <text x="${(x+cw/2).toFixed(1)}" y="${(y+rh/2+2).toFixed(1)}" text-anchor="middle" font-size="15" font-weight="800"
+        fill="#fff" opacity="${thin?.78:1}">${val(a)}</text>
+      <text x="${(x+cw/2).toFixed(1)}" y="${(y+rh/2+16).toFixed(1)}" text-anchor="middle" font-size="9.5"
+        fill="rgba(255,255,255,.75)">${a.count} ball${a.count>1?'s':''}</text>
+      <title>Zone ${z} — ${a.count} ball${a.count>1?'s':''}, avg ${a.avgEV.toFixed(1)} mph, max ${a.maxEV.toFixed(1)} mph, ${Math.round(a.hha)}% hard hit</title></g>`;
+  });
+  const bx=X(-1.5), bw=X(1.5)-X(-1.5);
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="max-width:${W}px;margin:0 auto">
-    <defs><mask id="zmask"><rect width="${W}" height="${H}" fill="#fff"/>
-      <rect x="${mx}" y="${my}" width="${iw}" height="${ih}" fill="#000"/></mask></defs>
-    <g mask="url(#zmask)">${ring}
-      <line x1="${W/2}" y1="0" x2="${W/2}" y2="${H}" stroke="#0b1220" stroke-width="1.5"/>
-      <line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="#0b1220" stroke-width="1.5"/></g>
-    ${ringText}${grid}
-    <rect x="${mx}" y="${my}" width="${iw}" height="${ih}" fill="none" stroke="#e9eefb" stroke-width="2.5"/>
-    <rect x="0.75" y="0.75" width="${W-1.5}" height="${H-1.5}" fill="none" stroke="#27395c"/></svg>
-   <div class="legend"><span>Catcher's view · white box = strike zone · outer ring = balls</span>
-     ${lo===hi?'':`<span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${ZM==='count'?lo:(ZM==='hha'?Math.round(lo)+'%':(ZM==='avg'?avg3(lo):lo.toFixed(1)))}
-       <i style="background:${heat(hi)};margin-left:8px"></i>${ZM==='count'?hi:(ZM==='hha'?Math.round(hi)+'%':(ZM==='avg'?avg3(hi):hi.toFixed(1)))}</span>`}</div>
+    <rect x="${P.l}" y="${Yr(-1).toFixed(1)}" width="${(W-P.l-P.r).toFixed(1)}" height="${(rh*5).toFixed(1)}" fill="#111b2e" rx="3"/>
+    ${cells}
+    <rect x="${bx.toFixed(1)}" y="${Yr(0).toFixed(1)}" width="${bw.toFixed(1)}" height="${(rh*3).toFixed(1)}"
+      fill="none" stroke="#e9eefb" stroke-width="2.5"/>
+    <text x="${(bx+bw/2).toFixed(1)}" y="${(Yr(-1)-2).toFixed(1)}" fill="#6c7fa5" font-size="10" text-anchor="middle">above the zone</text>
+    <text x="${(bx+bw/2).toFixed(1)}" y="${(Yr(4)+11).toFixed(1)}" fill="#6c7fa5" font-size="10" text-anchor="middle">below the zone</text>
+   </svg>
+   <div class="legend"><span>Catcher's view · white box = strike zone</span>
+     ${lo===hi?'':`<span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${fmtEdge(lo)}
+       <i style="background:${heat(hi)};margin-left:8px"></i>${fmtEdge(hi)}</span>`}</div>
    ${zs.some(z=>agg[z].count<3)?'<div class="hint" style="margin-top:6px">Cells with one or two balls are shown faded — too small a sample to read anything into.</div>':''}`;
 }
 /* HitTrax simulates the result of every ball in play against a defence — that's where its
@@ -1651,7 +1653,7 @@ function outcomeCard(balls,where){
    HitTrax put outside the zone, which a zone-number remap could never reach. */
 function zonePos(z){
   z=num(z); if(z==null)return null;
-  const base={1:-1,4:-1,7:-1,2:0,5:0,8:0,3:1,6:1,9:1,10:-1.7,12:-1.7,11:1.7,13:1.7}[z];
+  const base={1:-1,4:-1,7:-1,2:0,5:0,8:0,3:1,6:1,9:1,10:-2,12:-2,11:2,13:2}[z];
   if(base==null)return null;
   const cal=DB.settings.zoneCal||'none';
   if(cal==='mirror')return -base;
@@ -1750,7 +1752,7 @@ function plateCard(balls){
 function zoneSplit(balls){
   const b=balls.filter(x=>num(x.zone)!=null);
   if(!b.length)return'';
-  const group=inZone=>b.filter(x=>{const z=zoneFix(x.zone); return inZone?(z>=1&&z<=9):(z>=10)});
+  const group=inZone=>b.filter(x=>{const z=num(x.zone); return inZone?(z>=1&&z<=9):(z>=10)});
   const rows=[['In the zone',group(true)],['Out of the zone',group(false)]].filter(r=>r[1].length);
   if(rows.length<2)return'';
   const cell=(g)=>{const st=computeFromBalls(g,HH()), o=outcomeLine(g);
@@ -1889,7 +1891,7 @@ function zoneCard(balls,where){
   return `<div class="card"><div class="row" style="align-items:baseline">
      <div><h2>Strike-zone heat map${zoneCalLabel()?` <span class="chip a">${zoneCalLabel()}</span>`:''}</h2>
        <div class="hint">${n} batted ball${n>1?'s':''} ${where}${zoneCalLabel()
-         ?' · the 3×3 is relabelled for display; the outer ring is above/below the zone, which a sideways shift can’t move'
+         ?' · every cell moved, measurements untouched'
          :''}</div></div>
      <div class="seg" style="margin-left:auto">${Object.keys(ZMETRICS).map(k=>
        `<button class="${ZM===k?'on':''}" onclick="ZM='${k}';render()">${ZMETRICS[k]}</button>`).join('')}</div></div>
