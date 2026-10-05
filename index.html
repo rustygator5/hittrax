@@ -152,6 +152,8 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 </header>
 
 <main class="wrap" id="view"></main>
+<footer class="wrap" style="padding:18px 14px 30px;text-align:center;font-size:11.5px;color:var(--dim2)">
+  HitTrax Progress Tracker · build <span id="buildTag"></span></footer>
 
 <dialog id="adlg"><div class="dlg-hd"><h2>Sync across devices</h2>
   <button class="btn ghost" style="margin-left:auto;padding:6px 12px" onclick="adlg.close()">Close</button></div>
@@ -163,6 +165,8 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 
 <script>
 /* ============================== storage ============================== */
+// bump on every deploy — answers "is my phone on the new version?" at a glance
+const APP_BUILD='2026.10.05.4';
 const KEY='hittrax.tracker.v1';
 const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
 // Bump whenever the parser learns a new column — stored source files are re-read on boot so
@@ -602,7 +606,8 @@ const M=[
  {k:'avgEV',   n:'Avg Exit Velo',      u:'mph', d:1, dir:'up'},
  {k:'topEV',   n:'Top-25% Avg EV',     u:'mph', d:1, dir:'up'},
  {k:'hha',     n:'Hard-Hit Avg',       u:'%',   d:0, dir:'up'},
- {k:'barrel',  n:'Barrel %',           u:'%',   d:0, dir:'up'},
+ {k:'barrel',  n:'Hard + Sweet-Spot %', u:'%',   d:0, dir:'up'},
+ {k:'laSD',    n:'Launch Angle Spread',  u:'°',   d:1, dir:'down'},
  {k:'avgLA',   n:'Avg Launch Angle',   u:'°',   d:1, dir:'win', win:[10,20]},
  {k:'sweet',   n:'Sweet-Spot LA %',    u:'%',   d:0, dir:'up'},
  {k:'ld',      n:'Line Drive %',       u:'%',   d:0, dir:'up'},
@@ -631,6 +636,7 @@ const CM=[
  {k:'onTarget', n:'On-Target %',        u:'%',   d:0, dir:'up'},
  {k:'outPct',   n:'Projected Outs %',   u:'%',   d:0, dir:'up'},
  {k:'avgMiss',  n:'Avg Miss from Bag',  u:'in',  d:1, dir:'down'},
+ {k:'exchSD',   n:'Exchange Spread',    u:'s',   d:2, dir:'down'},
 ];
 // GameChanger box-score line
 const GM=[
@@ -701,6 +707,9 @@ function computeFromBalls(balls,hh,bq,pitchFallback){
     hha:hard/n*100,
     barrel:barrel/n*100,
     avgLA:las.length?las.reduce((a,c)=>a+c,0)/las.length:null,
+    // how tightly the angles cluster: a 15° average built from -20° and +50° is a different
+    // hitter from a steady 12-18°. Read it with sweet-spot % — a tight cluster of grounders is tight too.
+    laSD:sdOf(las,4),
     sweet:las.length?sweet/las.length*100:null,
     gb:cls?cnt.gb/cls*100:null, ld:cls?cnt.ld/cls*100:null,
     fb:cls?cnt.fb/cls*100:null, pu:cls?cnt.pu/cls*100:null,
@@ -764,6 +773,8 @@ function computeFromThrows(T){
     onTarget,
     outPct:called.length?called.filter(x=>x.outcome==='out').length/called.length*100:null,
     avgMiss:avg(miss),
+    // a 0.74 average built from 0.57s and 1.07s is two different exchanges — this says which
+    exchSD:sdOf(exch,4),
   };
 }
 function sessionStats(s){
@@ -1151,7 +1162,7 @@ function scatterLAEV(balls,hh){
     g+=`<line x1="${P.l}" x2="${W-P.r}" y1="${yy}" y2="${yy}" stroke="#27395c"/>`+
        `<text x="${P.l-6}" y="${yy+4}" fill="#6c7fa5" font-size="10.5" text-anchor="end">${v.toFixed(0)}</text>`;}
   const zone=`<rect x="${x(8)}" y="${P.t}" width="${x(32)-x(8)}" height="${y(hh)-P.t}" fill="rgba(47,191,113,.13)"/>
-   <text x="${(x(8)+x(32))/2}" y="${P.t+16}" fill="#7fe0ab" font-size="11" text-anchor="middle" font-weight="700">DAMAGE ZONE</text>`;
+   <text x="${(x(8)+x(32))/2}" y="${P.t+16}" fill="#7fe0ab" font-size="11" text-anchor="middle" font-weight="700">HARD + SWEET SPOT</text>`;
   const dots=b.map(p=>{const hard=+p.ev>=hh&&+p.la>=8&&+p.la<=32;
     return `<circle cx="${x(+p.la).toFixed(1)}" cy="${y(+p.ev).toFixed(1)}" r="4.5" fill="${hard?'#2fbf71':'#FA4616'}" opacity=".85"><title>${(+p.ev).toFixed(1)} mph @ ${(+p.la).toFixed(0)}°</title></circle>`}).join('');
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}${zone}${dots}
@@ -2189,6 +2200,7 @@ function vDash(){
   ${(cat||gm)?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
   ${gm?'':(cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[]))}
   ${cat?throwBarsCard(last.throws||[]):''}
+  ${cat?workloadCard():''}
   ${(cat||gm)?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
   ${(()=>{if(VIEWKIND==='hitting'&&series('batSpeed').length>=2)TRENDDEF.hitting='batSpeed';else if(VIEWKIND==='hitting')TRENDDEF.hitting='maxEV';return''})()}
@@ -2267,6 +2279,44 @@ function popSplit(st){
    <div class="legend"><span><i style="background:#f2b13c"></i>Exchange ${Math.round(exPct)}%</span>
      <span><i style="background:#3d6df0"></i>Ball flight ${Math.round(100-exPct)}% — arm strength</span></div></div>`;
 }
+/* Arm care. There's no Pitch Smart for catchers, but the workload principle is the same: arms
+   get sore after a jump in load, not after a steady one. So: throws per week, and this week
+   against his own recent average. Only HitTrax throws are counted — games and bullpens add more. */
+const dateFrom=ds=>{const [y,m,d]=ds.split('-').map(Number); return new Date(y,m-1,d)};   // local midnight
+function mondayOf(ds){const dt=dateFrom(ds); dt.setDate(dt.getDate()-((dt.getDay()+6)%7)); return localDate(dt)}
+function workloadCard(){
+  const throwsOn={};
+  DB.sessions.filter(s=>kindOf(s)==='catching'&&dispo(s)!=='out').forEach(s=>{
+    const n=(s.throws||[]).filter(x=>['clean','misfire'].includes(throwClass(x))).length
+      ||num((s.summary||{}).throws)||0;
+    if(n)throwsOn[s.date]=(throwsOn[s.date]||0)+n;
+  });
+  const dates=Object.keys(throwsOn); if(!dates.length)return'';
+  const today=localDate(), wk={};
+  dates.forEach(d=>{const w=mondayOf(d); wk[w]=(wk[w]||0)+throwsOn[d]});
+  const thisMon=mondayOf(today), weeks=[];
+  for(let i=5;i>=0;i--){const dt=dateFrom(thisMon); dt.setDate(dt.getDate()-7*i);
+    const k=localDate(dt); weeks.push({k,n:wk[k]||0})}
+  const now=weeks[5].n, prior=weeks.slice(1,5), active=prior.filter(w=>w.n>0);
+  const chronic=active.length>=2?prior.reduce((a,w)=>a+w.n,0)/4:null, ratio=chronic?now/chronic:null;
+  const maxN=Math.max(1,...weeks.map(w=>w.n));
+  let read;
+  if(ratio==null)read='Needs a couple more weeks of logged throwing before this week can be compared with his normal load.';
+  else if(ratio>=1.5)read=`<b>Spike:</b> ${now} throws this week is ${ratio.toFixed(1)}× his recent average of ${Math.round(chronic)}. Jumps like this are when arms get sore — ease the next session or two.`;
+  else if(ratio<=0.6&&now>0)read=`Light week (${ratio.toFixed(1)}× normal) — fine, but ramp back up gradually rather than jumping straight to a big day.`;
+  else read=`Steady: ${now} throws this week vs a recent average of ${Math.round(chronic)} (${ratio.toFixed(1)}×).`;
+  const bars=weeks.map((w,i)=>{const h=Math.round((w.n/maxN)*70), cur=i===5;
+    return `<div style="flex:1;text-align:center">
+      <div style="height:74px;display:flex;align-items:flex-end;justify-content:center">
+        <div title="${w.n} throws, week of ${esc(w.k)}" style="width:62%;height:${Math.max(w.n?3:1,h)}px;border-radius:4px 4px 0 0;
+          background:${cur?(ratio>=1.5?'var(--red)':'var(--orange)'):'rgba(61,109,240,.7)'}"></div></div>
+      <div style="font-size:11px;font-weight:700;margin-top:3px">${w.n||'—'}</div>
+      <div class="hint" style="font-size:10px">${cur?'this wk':esc(w.k.slice(5))}</div></div>`}).join('');
+  return `<div class="card"><h2>Arm care</h2>
+    <div class="hint">Throws logged per week (Mon–Sun). Only HitTrax throws are counted — game innings and bullpens add more.</div>
+    <div style="display:flex;gap:4px;margin-top:10px">${bars}</div>
+    <div class="note${ratio>=1.5?' warn':''}" style="margin-top:12px">${read}</div></div>`;
+}
 function popBenchCard(st,b){
   const v=num(st.bestPop)!=null?num(st.bestPop):num(st.avgPop); if(v==null)return'';
   const lo=Math.min(b.elite-0.15,v-0.05), hi=Math.max(b.avg[1]+0.2,v+0.05);
@@ -2277,7 +2327,8 @@ function popBenchCard(st,b){
   else if(v<=b.avg[1]){tag='In the average band';cls='a'}
   return `<div class="card"><div class="row" style="align-items:center">
     <div><h2>Age benchmark <span class="chip">${b.label}</span></h2>
-    <div class="hint">Best pop time to 2B vs. typical ranges for this age — lower is better</div></div>
+    <div class="hint">Best pop time to 2B vs. typical ranges for this age — lower is better. Only meaningful if HitTrax's
+      field setting at the facility matches his league's bases (${basePath()} ft at this age) — worth checking once.</div></div>
     <span class="chip ${cls}" style="margin-left:auto">${tag}</span></div>
     <div style="position:relative;height:56px;margin-top:6px">
       <div style="position:absolute;top:18px;left:0;right:0;height:14px;border-radius:99px;background:var(--bg2);border:1px solid var(--line);overflow:hidden">
@@ -2330,6 +2381,9 @@ function benchCard(st,b){
    appearances), compare the most recent window with the one before it, and only call a change
    when it clears a 95% bar. Everything else is reported honestly as "inside the noise". */
 const Z95=1.96;
+// sample standard deviation, or null below n
+function sdOf(a,minN){if(a.length<(minN||2))return null; const m=a.reduce((x,c)=>x+c,0)/a.length;
+  return Math.sqrt(a.reduce((x,c)=>x+(c-m)*(c-m),0)/(a.length-1))}
 const meanVar=a=>{const n=a.length; if(n<2)return null; const m=a.reduce((x,c)=>x+c,0)/n;
   return {m,v:a.reduce((x,c)=>x+(c-m)*(c-m),0)/(n-1),n}};
 function testMean(a,b){            // Welch: is the recent mean really different?
@@ -3252,7 +3306,10 @@ function vData(){
     <li><b>Launch-angle buckets:</b> ground ball &lt;10°, line drive 10–25°, fly ball 25–50°, pop-up &gt;50°</li>
     <li><b>Sweet-spot LA %:</b> share of batted balls between 8° and 32°</li>
     <li><b>Hard-hit average:</b> share of batted balls at or above ${HH()} mph exit velo</li>
-    <li><b>Barrel %:</b> at or above ${HH()} mph <i>and</i> between 8° and 32° — the damage zone</li>
+    <li><b>Hard + sweet-spot %:</b> at or above ${HH()} mph <i>and</i> between 8° and 32°. Not Statcast's "barrel", whose angle window
+      widens with exit velo and starts at 98 mph — this is the simple youth version: hit hard, at a launch angle that plays</li>
+    <li><b>Launch angle spread:</b> the standard deviation of his launch angles — lower means a more repeatable swing path.
+      Read it alongside sweet-spot %: a tight cluster of ground balls is tight too</li>
     <li><b>Top-25% avg EV:</b> average of the hardest quarter of the round — steadier than a single max, better than the overall average for tracking real power gains</li>
     <li><b>Catching — pop time:</b> glove impact to the ball reaching 2B; <b>exchange</b> is the receive-to-release part of it, <b>arm strength</b> is peak throw velocity</li>
     <li><b>Catching — on-target %:</b> throws finishing within ${ON_TARGET_IN} in of the bag (or the file's own on/off-target flag); <b>projected outs %</b> uses HitTrax's out/safe call</li>
@@ -3337,6 +3394,7 @@ function wipe(){
 /* ============================== boot ============================== */
 (function(){const el=document.getElementById('hubLink');
   if(el&&location.pathname.replace(/\/+$/,'')!=='')el.hidden=false;})();
+try{document.getElementById('buildTag').textContent=APP_BUILD}catch(e){}
 readSession();
 // a device that already knows its borrowed sign-in died should still say so, not just "local"
 if(!session)try{EXPIRED=!!localStorage.getItem(DEADTOK)}catch(e){}
