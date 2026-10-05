@@ -16,7 +16,7 @@ so it's safe to open on a device that holds real data. Fixtures are synthetic bu
 and every expected number is worked out by hand in the comments.</div>
 <div class="sum" id="sum">Running…</div>
 <div id="out"></div>
-<iframe id="app" src="index.html?test=1"></iframe>
+<iframe id="app"></iframe>
 <script>
 /* ---------- fixtures: HitTrax's real headers, made-up values ---------- */
 const HIT_HEADER='#, AB, Date, Time Stamp, Pitch, Strike Zone, P. Type, Velo, LA, Dist, Res, Type, Horiz. Angle, Pts, Strike Zone Bottom, Strike Zone Top, Strike Zone Width, Vertical Distance, Horizontal Distance, POI X, POI Y, POI Z, Spray Chart X, Spray Chart Z, Fielded X, Fielded Z, Bat Material, User, Pitch Angle, Batting, Level, Opposing Player, Tag';
@@ -168,6 +168,63 @@ function tests(){
   eq('Security','settings are whitelisted',run(`JSON.stringify(sanitizeSettings({hardHit:'<img>',zoneCal:'evil',batQ:0.22,extra:1}))`),'{"batQ":0.22}');
   eq('Security','escape covers single quotes',run(`esc("<a href='x'>")`),'&lt;a href=&#39;x&#39;&gt;');
 
+  // innings are thirds, not decimals
+  eq('Innings','14.1 is 43 outs',run(`innOuts(14.1)`),43);
+  eq('Innings','6.2 is 20 outs',run(`innOuts(6.2)`),20);
+  eq('Innings','14.33 typed as a decimal is still 43 outs',run(`innOuts(14.33)`),43);
+  eq('Innings','14.1 + 6.2 = 21 innings, not 20.3',run(`sumGames([computeGame({inn:14.1}),computeGame({inn:6.2})]).inn`),21);
+  eq('Innings','written as thirds',run(`innStr(43)`),'14⅓');
+  eq('Innings','passed balls per 6: 5 in 14⅓ = 2.09',run(`computeGame({inn:14.1,pb:5}).pb6`),5/(43/3)*6,1e-9);
+
+  // GameChanger season lines are snapshots
+  const SNAP=(id,date,sum)=>`{id:'${id}',kind:'games',date:'${date}',type:'Season to date',mode:'game',mtime:1,summary:${sum}}`;
+  const GAME=(id,date,sum)=>`{id:'${id}',kind:'games',date:'${date}',type:'Game',mode:'game',mtime:1,summary:${sum}}`;
+  const season=()=>run(`(t=>({gp:t.gp,pa:t.pa,h:t.h,ab:t.ab,avg:+t.avg.toFixed(3)}))(sumGames(sorted('games').map(s=>sessionStats(s))))`);
+  fresh();
+  run(`DB.sessions=[${SNAP('s1','2026-10-05','{gp:4,pa:9,ab:7,h:3,bb:2,k:1}')},${SNAP('s2','2026-10-12','{gp:5,pa:13,ab:10,h:4,d:1,bb:2,k:2}')}];`);
+  eq('Season lines','two updates are not added together (5 games, not 9)',season(),{gp:5,pa:13,h:4,ab:10,avg:0.4});
+  eq('Season lines','the second update becomes game 5 on its own',
+    run(`(e=>[snapLabel(e),e.summary.pa,e.summary.ab,e.summary.h,e.summary.d,e.summary.k].join('|'))(sorted('games')[1])`),'Game 5|4|3|1|1|1');
+  eq('Season lines','game 5 slash line (1-for-3, a double)',run(`(g=>[avg3(g.avg),avg3(g.slg)].join('/'))(sessionStats(sorted('games')[1]))`),'.333/.667');
+  fresh();
+  run(`DB.sessions=[${SNAP('s1','2026-10-05','{gp:4,pa:9,ab:7,h:3}')},${GAME('g5','2026-10-08','{pa:4,ab:4,h:2}')},${SNAP('s2','2026-10-12','{gp:6,pa:17,ab:14,h:6}')}];`);
+  eq('Season lines','a game logged between updates is not counted twice',season(),{gp:6,pa:17,h:6,ab:14,avg:0.429});
+  eq('Season lines','the newer update only adds the game not logged',run(`(e=>[snapLabel(e),e.summary.pa,e.summary.h].join('|'))(sorted('games')[2])`),'Game 6|4|1');
+  fresh();
+  run(`DB.sessions=[${GAME('g4','2026-10-05','{pa:4,ab:4,h:1}')},${SNAP('s1','2026-10-05','{gp:4,pa:9,ab:7,h:3}')}];`);
+  eq('Season lines','a game on the same date is taken as inside the update',season(),{gp:4,pa:9,h:3,ab:7,avg:0.429});
+  fresh();
+  run(`DB.sessions=[${SNAP('s1','2026-09-28','{gp:2,pa:10,ab:10,h:2,ldPct:20,inn:14.1,pb:3}')},${SNAP('s2','2026-10-05','{gp:4,pa:20,ab:20,h:5,ldPct:30,inn:20,pb:5}')}];`);
+  eq('Season lines','a percentage is split by plate appearances: (30×20 − 20×10)/10 = 40%',run(`sorted('games')[1].summary.ldPct`),40,1e-9);
+  eq('Season lines','…and the lines add back up to the update’s 30%',run(`sumGames(sorted('games').map(s=>sessionStats(s))).ldPct`),30,1e-9);
+  eq('Season lines','innings between updates are subtracted in thirds (20 − 14⅓ = 5⅔)',run(`sorted('games')[1].summary.inn`),5.2,1e-9);
+  check('Season lines','an update is never a single-game best',run(`(VIEWKIND='games',best('h'))`)===null);
+
+  // throws to third
+  fresh();
+  run(`DB.sessions=[{id:'c2',kind:'catching',date:'2026-09-01',type:'Throw-downs to 2B',mode:'detail',mtime:1,throws:[{pop:2.3,exch:.8},{pop:2.4,exch:.8}]},
+     {id:'c3',kind:'catching',date:'2026-09-01',type:'Throw-downs to 3B',mode:'detail',mtime:2,throws:[{pop:1.8,exch:.7},{pop:1.9,exch:.7}]}];
+     VIEWKIND='catching';`);
+  eq('Throws to 3B','kept as their own entry on the same day',run(`sorted('catching').map(e=>e.base3?'3B':'2B').join(',')`),'2B,3B');
+  eq('Throws to 3B','not a 2B best pop',run(`best('bestPop').v`),2.3);
+  eq('Throws to 3B','not pooled into the 2B windows',run(`pooledRows('catching').length`),2);
+
+  // change formatting
+  eq('Formatting','counts change in whole numbers',run(`dstr('h',2)`),'+2');
+  eq('Formatting','rates change in points',run(`dstr('kPct',-12.5)`),'-12.5 pts');
+  eq('Formatting','averages read like averages',run(`dstr('avg',0.095)`),'+.095');
+  eq('Formatting','times keep hundredths',run(`dstr('avgPop',-0.05)`),'-0.05s');
+  eq('Formatting','speeds carry their unit',run(`dstr('maxEV',2.14)`),'+2.1 mph');
+
+  // games report and coach's read
+  fresh();
+  run(`DB.sessions=[${SNAP('s1','2026-10-05','{gp:4,pa:9,ab:7,h:3,bb:2,k:1,inn:14.1,pb:5,sba:2,csa:1}')}]; VIEWKIND='games';`);
+  const rep=run(`gamesReport()`);
+  check('Games report','titled a game report, not a hitting report',/game report/.test(rep)&&!/hitting progress/.test(rep));
+  check('Games report','no exit-velo reference on a box score',!/exit velo/i.test(rep));
+  check('Games report','catching line shows innings in thirds and PB per 6',/14⅓/.test(rep)&&/2\.1/.test(rep));
+  check('Coach’s read','passed balls become the thing to work on',/5 passed balls in 14⅓ innings/.test(run(`coachSummaryCard()`)));
+
   // dates
   eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
   check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));
@@ -190,4 +247,5 @@ document.getElementById('app').addEventListener('load',()=>{
   try{run(`localStorage.removeItem(KEY)`)}catch(e){}          // leave nothing behind
   report();
 });
+document.getElementById('app').src='index.html?test=1&v='+Date.now();   // never test a cached copy
 </script></body></html>

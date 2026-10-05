@@ -26,8 +26,22 @@ GameChanger's CSV export is staff-only, so there's nothing to upload on a family
 entry form takes the numbers off the screen (or off a screenshot) in under a minute. It covers
 the Standard and Advanced batting tabs plus the Catching and Fielding ones - QAB, HHB, C%,
 LD/FB/GB%, BABIP, BA/RISP, pitches seen, innings caught, PB, steals allowed, runners caught, PO,
-A, E - and derives QAB%, pitches per PA and fielding % from them. Set GP above 1 and the entry is
-a season-to-date line rather than a single game.
+A, E - and derives QAB%, pitches per PA and fielding % from them.
+
+**Season-to-date lines are snapshots.** Set the type to *Season to date* (the app asks when GP is
+above 1) and you can paste GameChanger's whole season line in after every game: each update only
+contributes what it adds over everything before it, so a 4-game line followed by a 5-game line is
+5 games, not 9. The difference between two updates becomes its own entry ("Game 5"), which gives
+the game log and trends a line per update. Games logged one by one in between are subtracted, and a
+game on the same date as an update is taken as already inside it.
+
+**Innings are thirds.** 14.1 means 14⅓, so innings are added as outs (14.1 + 6.2 = 21, not 20.3).
+That makes **passed balls per 6 innings** possible - the one receiving/blocking number a box score
+gives - shown on the season card, the game report, and in the Coach's read once he has 12+ innings
+caught and is above 1.5 per game.
+
+The **Report** tab has its own game report on the Games side: season batting line and rates, the
+catching and fielding lines, OPS season to date, and a game log.
 
 Entries can also arrive as a link: a `#add=<base64 json>` URL opens a confirmation listing what
 it contains - sessions, or a setting such as the strike-zone calibration - and applies it on approval - handy when someone reads a box score off a screenshot
@@ -124,6 +138,12 @@ That matters more than usual here: the app shares an origin with the hub and the
 - **Arm care** counts throws per week and flags a week 1.5x or more above his recent average.
 - **Spreads** - launch-angle spread and exchange spread track how repeatable the swing path and the
   exchange are, not just their averages.
+
+## Throws to third
+HitTrax's catching export doesn't say which base, so the session type does. Rounds typed
+*Throw-downs to 3B* stay their own entry (even on a day with 2B rounds) and are kept out of 2B pop-time
+trends, personal bests, the age chart, What's moving and the Coach's read - a shorter throw isn't a
+faster catcher.
 
 ## Two disciplines
 A **Hitting / Catching** switch sits under the tabs (it appears once a catching session exists).
@@ -305,7 +325,7 @@ python -m http.server 8776 --directory "C:/Users/user/Documents/HitTrax"
 
 ## Regression tests
 Open `tests.html` (locally at http://localhost:8776/tests.html, or `/hittrax/tests.html` on the live site) — the tab
-title reads `✓ 68/68` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
+title reads `✓ 96/96` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
 key (`hittrax.test.v1`), never signs in, never syncs and ignores `#add=` links, and it deletes that key when done, so
 it's safe on a device holding real data. The fixtures are synthetic but use HitTrax's exact export headers; every
 expected number is worked out by hand in the comments. Covers the parsers (dates, decimal commas, scorebook results,

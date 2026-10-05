@@ -166,7 +166,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.6';
+const APP_BUILD='2026.10.05.7';
 // ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
 // so the regression suite can run on the same device as real data without touching it
 const TEST=/[?&]test=1(&|$)/.test(location.search);
@@ -670,6 +670,7 @@ const GM=[
  {k:'sb',   n:'Stolen Bases',    u:'', d:0, dir:'up'},
  {k:'csPct',n:'Caught Stealing %',u:'%',d:0,dir:'up'},
  {k:'pb',   n:'Passed Balls',    u:'', d:0, dir:'down'},
+ {k:'pb6',  n:'Passed Balls per 6 inn',u:'',d:1, dir:'down'},
  {k:'qabPct',n:'Quality AB %',  u:'%',d:0, dir:'up'},
  {k:'cPct', n:'Contact Rate',    u:'%',d:0, dir:'up'},
  {k:'hhb',  n:'Hard-Hit Balls',  u:'', d:0, dir:'up'},
@@ -690,7 +691,7 @@ const TRENDDEF={hitting:'maxEV',catching:'avgPop',games:'ops'};
 const KIND={hitting:{label:'Hitting',icon:'⚾',metrics:M,core:CORE,unit:'balls in play'},
             catching:{label:'Catching',icon:'🧤',metrics:CM,core:CCORE,unit:'throws'},
             games:{label:'Games',icon:'📋',metrics:GM,core:GCORE,unit:'plate appearances'}};
-const STYPES={games:['Game','Doubleheader','Tournament','Scrimmage','Other'],
+const STYPES={games:['Game','Season to date','Doubleheader','Tournament','Scrimmage','Other'],
   hitting:['Front toss','Machine','Live BP','Tee','Game / scrimmage','Other'],
   catching:['Throw-downs to 2B','Throw-downs to 3B','Mixed bases','Bullpen / receiving','Game / scrimmage','Other']};
 const kindOf=s=>s.kind||'hitting';
@@ -809,17 +810,28 @@ const rawSorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
    uploads kept underneath so they can still be inspected and deleted. */
 const GROUPS={in:'Grouped',solo:'Separate',out:'Excluded'};
 const dispo=s=>s.group||'in';
+// Pop-time norms, trends and bests are all throws to second. HitTrax's file doesn't say which base,
+// so the session type does: throws to third stay their own entry and out of every 2B comparison.
+const is3B=s=>kindOf(s)==='catching'&&/3B/.test(s.type||'');
+const vs2B=list=>list.filter(e=>!e.base3);
 function daySessions(kind){
   kind=kind||VIEWKIND;
-  const by={}, out=[];
-  rawSorted(kind).forEach(s=>{(by[s.date]=by[s.date]||[]).push(s)});
+  const by={}, out=[], snaps=[];
+  rawSorted(kind).forEach(s=>{
+    if(isSnap(s)){if(dispo(s)!=='out')snaps.push(s); return}
+    (by[s.date]=by[s.date]||[]).push(s)});
   Object.keys(by).sort().forEach(d=>{
     const parts=by[d];
     const grouped=parts.filter(s=>dispo(s)==='in');
-    if(grouped.length)out.push(dayOf(grouped,kind));
-    parts.filter(s=>dispo(s)==='solo').forEach(s=>out.push(Object.assign({},s,{parts:[s],solo:true})));
+    const two=grouped.filter(s=>!is3B(s)), three=grouped.filter(is3B);
+    if(two.length)out.push(dayOf(two,kind));
+    if(three.length){const e=dayOf(three,kind); e.base3=true;
+      if(three.length>1){e.id='day:catching3B:'+d; e.dayId=e.id}
+      out.push(e)}
+    parts.filter(s=>dispo(s)==='solo').forEach(s=>out.push(Object.assign({},s,{parts:[s],solo:true},is3B(s)?{base3:true}:{})));
   });
-  return out.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+  out.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+  return kind==='games'?gameTimeline(out,snaps):out;
 }
 const excludedOf=kind=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND)&&dispo(s)==='out')
   .sort((a,b)=>a.date<b.date?1:-1);
@@ -877,7 +889,7 @@ function mergeSummaries(list,kind){
 }
 const sorted=(kind)=>daySessions(kind);
 const countOf=kind=>daySessions(kind).length;
-const findSession=id=>DB.sessions.find(s=>s.id===id)||sorted('hitting').concat(sorted('catching')).find(s=>s.id===id);
+const findSession=id=>DB.sessions.find(s=>s.id===id)||sorted('hitting').concat(sorted('catching'),sorted('games')).find(s=>s.id===id);
 // sample size behind a session's numbers: balls in play, clean throws, or plate appearances
 function sampleN(s,st){st=st||sessionStats(s);
   const k=kindOf(s); return num(k==='catching'?st.throws:(k==='games'?st.pa:st.swings))||0}
@@ -893,7 +905,7 @@ function series(k){
       if(v!=null)out.push({date:s.date,id:s.id,v,n:num(tot.pa)||0})});
     return out;
   }
-  return sorted().map(s=>{const st=sessionStats(s); return {date:s.date,id:s.id,v:num(st[k]),n:sampleN(s,st)}})
+  return vs2B(sorted()).map(s=>{const st=sessionStats(s); return {date:s.date,id:s.id,v:num(st[k]),n:sampleN(s,st)}})
     .filter(p=>p.v!=null);
 }
 function num(v){return (v===''||v==null||isNaN(v))?null:+v;}
@@ -904,7 +916,9 @@ function best(k){
   let S;
   if(VIEWKIND==='games'){
     if(!SINGLE.includes(k))return null;                               // rate stats: season line only
-    S=sorted('games').map(s=>{const st=sessionStats(s); return {date:s.date,id:s.id,v:num(st[k])}}).filter(p=>p.v!=null);
+    // a best game has to be one game — not a doubleheader or a season-total update
+    S=sorted('games').filter(s=>(num(sessionStats(s).gp)||1)<=1).map(s=>{const st=sessionStats(s); return {date:s.date,id:s.id,v:num(st[k])}}).filter(p=>p.v!=null);
+    if(S.length<2)return null;                                        // the only single game isn't a best
   } else {
     S=series(k);
     if(!SINGLE.includes(k))S=S.filter(p=>p.n>=MIN_N[VIEWKIND]);
@@ -923,9 +937,13 @@ function dirClass(k,d){ if(d==null)return'flat'; const dir=MK[k].dir;
   if(+(+d).toFixed(decimals(k))===0)return'flat';   // rounds to nothing at the shown precision
   if(dir==='up')return d>0?'up':'down';
   if(dir==='down')return d<0?'up':'down'; return'flat';}
-function decimals(k){const m=MK[k]; return m.d===3?3:(m.u==='s'?2:(Math.abs(1)<10?1:0));}
-function dstr(k,d){ if(d==null)return''; const v=+(+d).toFixed(decimals(k));
-  return (v>0?'+':'')+v.toFixed(decimals(k)); }
+// counts change in whole numbers, times in hundredths, rates in percentage points
+function decimals(k){const m=MK[k]; return m.d===3?3:(m.u==='s'?2:(m.d===0&&m.u!=='%'?0:1));}
+const DUNIT={'%':' pts','°':'°','s':'s','mph':' mph','ft':' ft','in':' in'};
+function dstr(k,d){ if(d==null)return''; const dec=decimals(k), v=+(+d).toFixed(dec);
+  let t=(v>0?'+':'')+v.toFixed(dec);
+  if(dec===3)t=t.replace(/^([+-]?)0\./,'$1.');            // +.095, like a batting average
+  return t+(DUNIT[MK[k].u]||''); }
 function rolling(S,w){return S.map((p,i)=>{const sl=S.slice(Math.max(0,i-w+1),i+1);
   const wt=sl.reduce((a,c)=>a+(c.n||1),0);
   if(sl.every(c=>c.n))return {date:p.date,v:sl.reduce((a,c)=>a+c.v*c.n,0)/wt};
@@ -1305,6 +1323,13 @@ const GSECT=[
   ['In the field',[['po','PO'],['a','A'],['e','E']]],
 ];
 const GCOUNT=GSECT.flatMap(s=>s[1]);
+// Innings are written in thirds: 14.1 is 14⅓, 14.2 is 14⅔. Added as decimals, 14.1 + 6.2 comes
+// out 20.3 instead of 21 — so innings are always carried as outs and only written back at the end.
+function innOuts(v){v=num(v); if(v==null||v<0)return null;
+  const w=Math.floor(v), t=Math.round((v-w)*10);
+  return t<=2?w*3+t:Math.round(v*3)}                     // "14.33" typed as a decimal still works
+const outsToInn=o=>Math.floor(o/3)+(o%3)/10;
+const innStr=o=>o==null?'—':Math.floor(o/3)+['','⅓','⅔'][o%3];
 function computeGame(c){
   const n=k=>num(c[k])||0;
   const ab=n('ab'), h=n('h'), bb=n('bb'), hbp=n('hbp'), sf=n('sf');
@@ -1322,12 +1347,16 @@ function computeGame(c){
     fpct:chances?(n('po')+n('a'))/chances:null,
     csPct:(thrown+stolen)?thrown/(thrown+stolen)*100:null};
   s.ops=(s.obp!=null&&s.slg!=null)?s.obp+s.slg:null;
+  // passed balls per 6-inning game — the one receiving/blocking number a box score gives
+  s.outs=innOuts(c.inn);
+  s.pb6=(s.outs&&c.pb!=null)?n('pb')/(s.outs/3)*6:null;
   return s;
 }
 const GRATE=['ldPct','fbPct','gbPct','cPct','babip','risp'];
 function sumGames(list){
   const tot={};
   GCOUNT.forEach(([k])=>{ if(GRATE.includes(k))return;
+    if(k==='inn'){const o=list.reduce((a,g)=>a+(innOuts(g.inn)||0),0); if(o)tot.inn=outsToInn(o); return}
     const v=list.reduce((a,g)=>a+(num(g[k])||0),0); if(v)tot[k]=v});
   GRATE.forEach(k=>{                       // percentages: weight by plate appearances
     const have=list.filter(g=>num(g[k])!=null);
@@ -1336,6 +1365,46 @@ function sumGames(list){
   });
   return computeGame(tot);
 }
+/* GameChanger season totals are snapshots, not games. Added up they double-count: a 4-game line
+   plus the 5-game line a week later is not 9 games. So each snapshot only contributes what it adds
+   over everything before it — the games since the last update that weren't logged one by one.
+   Summed, those lines telescope back to the newest snapshot exactly, and the trend gets a line per
+   update for free. Games logged on the same date as a snapshot are taken as already inside it. */
+const SNAPTYPE='Season to date';
+const isSnap=s=>kindOf(s)==='games'&&s.type===SNAPTYPE;
+const GDIFF=GRATE.filter(k=>k!=='risp');            // BA/RISP has no usable weight — totals only
+function gameTimeline(days,snaps){
+  const ev=days.map(d=>({e:d,t:0})).concat(snaps.map(s=>({e:s,t:1})))
+    .sort((a,b)=>a.e.date<b.e.date?-1:a.e.date>b.e.date?1:(a.t-b.t)||((a.e.mtime||0)-(b.e.mtime||0)));
+  let acc={}, outs=0, W={}, P={};
+  const out=[];
+  ev.forEach(({e,t})=>{
+    const st=t?computeGame(e.summary||{}):sessionStats(e);
+    if(!t){
+      GCOUNT.forEach(([k])=>{if(!GRATE.includes(k)&&k!=='inn')acc[k]=(acc[k]||0)+(num(st[k])||0)});
+      outs+=st.outs||0;                                             // gp is in GCOUNT (computeGame makes it ≥1)
+      GDIFF.forEach(k=>{if(num(st[k])!=null&&st.pa){W[k]=(W[k]||0)+st[k]*st.pa; P[k]=(P[k]||0)+st.pa}});
+      out.push(e); return;
+    }
+    const line={}, gpBefore=acc.gp||0;
+    GCOUNT.forEach(([k])=>{ if(GRATE.includes(k)||k==='inn')return;
+      const v=num(st[k]); if(v==null)return;
+      const d=+(v-(acc[k]||0)).toFixed(3); if(d>0)line[k]=d});
+    if(st.outs!=null){const d=st.outs-outs; if(d>0)line.inn=outsToInn(d)}
+    GDIFF.forEach(k=>{ if(num(st[k])==null||!st.pa)return;
+      const p=st.pa-(P[k]||0), w=st[k]*st.pa-(W[k]||0);
+      if(p>0)line[k]=Math.max(0,Math.min(k==='babip'?1:100,w/p))});
+    // reset the running total to the snapshot itself
+    acc={}; GCOUNT.forEach(([k])=>{if(!GRATE.includes(k)&&k!=='inn')acc[k]=num(st[k])||0});
+    acc.gp=num(st.gp)||gpBefore; outs=st.outs||0; W={}; P={};
+    GDIFF.forEach(k=>{if(num(st[k])!=null&&st.pa){W[k]=st[k]*st.pa; P[k]=st.pa}});
+    if(!((line.pa||0)>0||(line.gp||0)>0||line.inn))return;          // everything in it was logged game by game
+    if(!line.gp)line.gp=1;
+    out.push(Object.assign({},e,{parts:[e],snap:true,summary:line,total:e.summary,gpFrom:gpBefore+1,gpTo:gpBefore+line.gp}));
+  });
+  return out;
+}
+const snapLabel=s=>s.gpTo>s.gpFrom?`Games ${s.gpFrom}–${s.gpTo}`:`Game ${s.gpFrom}`;
 /* season to date, plus what the cage says he should be doing */
 function seasonCard(S){
   const games=S.map(s=>sessionStats(s));
@@ -1344,7 +1413,7 @@ function seasonCard(S){
   const tile=(k,label,fmtv,sub)=>`<div class="tile"><div class="k">${label}</div>
     <div class="v">${fmtv}</div>${sub?`<div class="d flat">${sub}</div>`:''}</div>`;
   return `<div class="card"><h2>Season to date</h2>
-   <div class="hint">${S.length} game${S.length>1?'s':''} · ${t.pa||0} plate appearance${t.pa===1?'':'s'}</div>
+   <div class="hint">${t.gp} game${t.gp>1?'s':''} · ${t.pa||0} plate appearance${t.pa===1?'':'s'}${S.some(s=>s.snap)?' · season updates from GameChanger replace each other, never add up':''}</div>
    <div class="tiles">
      ${tile('avg','Batting average',avg3(t.avg),`${t.h||0} for ${t.ab||0}`)}
      ${tile('obp','On-base',avg3(t.obp),`${(t.bb||0)} BB · ${(t.hbp||0)} HBP`)}
@@ -1354,15 +1423,16 @@ function seasonCard(S){
      ${tile('bb','Walk rate',t.bbPct==null?'—':Math.round(t.bbPct)+'%',`${t.bb||0} walk${t.bb===1?'':'s'}`)}
      ${t.rbi?tile('rbi','RBI',t.rbi,`${t.r||0} run${t.r===1?'':'s'} scored`):''}
      ${t.csPct!=null?tile('cs','Caught stealing',Math.round(t.csPct)+'%',`${t.csa||0} of ${(t.csa||0)+(t.sba||0)} runners`):''}
+     ${t.pb6!=null?tile('pb','Passed balls',t.pb6.toFixed(1)+'<small> per 6 inn</small>',`${t.pb||0} in ${innStr(t.outs)} innings caught`):''}
    </div></div>`;
 }
 /* the comparison neither app can show on its own */
 function cageVsGameCard(){
-  const games=DB.sessions.filter(s=>kindOf(s)==='games'&&dispo(s)!=='out').map(s=>sessionStats(s));
+  const games=sorted('games').map(s=>sessionStats(s));
   if(!games.length)return'';
   const g=sumGames(games);
   const hit=sorted('hitting').flatMap(s=>s.balls||[]);
-  const cst=(()=>{const T=sorted('catching').flatMap(s=>s.throws||[]); return T.length?computeFromThrows(T):null})();
+  const cst=(()=>{const T=vs2B(sorted('catching')).flatMap(s=>s.throws||[]); return T.length?computeFromThrows(T):null})();
   if(!hit.length&&!cst)return'';
   const c=hit.length?computeFromBalls(hit,HH()):null, o=outcomeLine(hit);
   // balls in play in games, the denominator for every game rate below
@@ -2200,22 +2270,27 @@ function vDash(){
     + refCard();
   const last=dashPick(), st=sessionStats(last);
   const b=gm?null:(cat?popBench(DB.player.age):bench(DB.player.age));
+  const gmLabel=last.snap?`${snapLabel(last).toLowerCase()} (season update)`
+    :(num(st.gp)>1?`${st.gp} games this day`:'this game');
   const tiles=KIND[VIEWKIND].core.map(k=>{
     const v=num(st[k]); if(v==null)return'';
     const d=delta(k,last.id); const bs=best(k);
     const isPB=bs&&bs.id===last.id&&S.length>1;
     return `<div class="tile"><div class="k">${MK[k].n}${isPB?'<span class="pb">PB</span>':''}</div>
       <div class="v">${fmt(k,v)}<small>${MK[k].u}</small></div>
-      <div class="d ${dirClass(k,d)}">${gm?`<span class="flat">${num(st.gp)>1?'season line ('+st.gp+' games)':'this game'}</span>`
+      <div class="d ${dirClass(k,d)}">${gm?`<span class="flat">${gmLabel}</span>`
+        :last.base3?'<span class="flat">throws to 3B</span>'
         :(d===undefined?'<span class="flat">too few to compare</span>'
         :(d===null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'))}</div></div>`;
   }).join('');
   return syncBanner()+backfillBanner()+coachSummaryCard()+`
   <div class="card">
     <div class="row" style="align-items:baseline">
-      <div><h2>Latest session${last.solo?' <span class="chip a">separate round</span>'
-          :((last.parts&&last.parts.length>1)?` <span class="chip">${last.parts.length} rounds</span>`:'')}</h2>
-        <div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div></div>
+      <div><h2>${gm?(last.snap?'Latest season update':'Latest game'):'Latest session'}${last.solo?' <span class="chip a">separate round</span>'
+          :((last.parts&&last.parts.length>1)?` <span class="chip">${last.parts.length} ${gm?'games':'rounds'}</span>`:'')}${last.base3?' <span class="chip a">to 3B</span>':''}</h2>
+        <div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div>
+        ${last.snap?`<div class="hint">The games since the previous season update — the season card below has the full line.</div>`:''}
+        ${last.base3?`<div class="hint">Throws to third are shorter than the 2B throw every pop-time norm is built on, so they stay out of his 2B trends, bests and age chart.</div>`:''}</div>
       <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${esc(last.id)}')">Details</button>
     </div>
     ${dashPicker()}
@@ -2225,7 +2300,7 @@ function vDash(){
   </div>
   ${gm?seasonCard(S)+cageVsGameCard():''}
   ${(cat||gm)?'':batCard(last)}
-  ${gm?'':(b?(cat?popBenchCard(st,b):benchCard(st,b)):'')}
+  ${(gm||last.base3)?'':(b?(cat?popBenchCard(st,b):benchCard(st,b)):'')}
   ${(cat||gm)?'':gapsCard(last.balls,last)}
   ${(cat||gm)?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${(cat||gm)?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
@@ -2435,7 +2510,7 @@ function testProp(x1,n1,x2,n2){    // two-proportion z
 // pooled rows in date order, each carrying the threshold its own session was scored at
 function pooledRows(kind){
   const rows=[];
-  sorted(kind).forEach(s=>{
+  vs2B(sorted(kind)).forEach(s=>{
     if(kind==='hitting')(s.balls||[]).forEach(b=>{if(num(b.ev)>0)rows.push({...b,_hh:dayHHof(s)})});
     if(kind==='catching')cleanThrows(s.throws).forEach(x=>rows.push(x));
   });
@@ -2588,7 +2663,7 @@ function rollMetrics(kind,rows){
 }
 function rollRows(kind){
   const rows=[];
-  sorted(kind).forEach(s=>{
+  vs2B(sorted(kind)).forEach(s=>{
     const tag={_d:s.date,_hh:dayHHof(s),_bq:dayBQof(s)};
     if(kind==='hitting')(s.balls||[]).forEach(b=>{if(num(b.ev)>0)rows.push({...b,...tag})});
     if(kind==='catching')cleanThrows(s.throws).forEach(x=>rows.push({...x,...tag}));
@@ -2814,7 +2889,7 @@ function coachSummaryCard(){
     const mv=movingTests('catching');
     (mv.tests||[]).filter(r=>r.sig&&moveGood(r)).forEach(r=>push(S,3,'Catching',`${r.label} improved (${r.from.toFixed(2)} → ${r.to.toFixed(2)}) — beyond the noise.`));
     const st=computeFromThrows(thrRows.slice(-20))||{}, pb=popBench(DB.player.age);
-    const allPop=computeFromThrows(sorted('catching').flatMap(s=>s.throws||[]))||{};
+    const allPop=computeFromThrows(vs2B(sorted('catching')).flatMap(s=>s.throws||[]))||{};
     if(pb&&num(allPop.bestPop)!=null&&allPop.bestPop<=pb.elite)push(S,2,'Catching',`Best pop ${allPop.bestPop.toFixed(2)}s — elite range for age ${pb.label}.`);
     if(num(st.avgExch)!=null&&st.avgExch<0.8)push(S,2,'Catching',`Quick exchange: ${st.avgExch.toFixed(2)}s average.`);
     if(num(st.avgExch)>=0.95)push(F,2.5,'Catching',`Exchange is the slow part (${st.avgExch.toFixed(2)}s).`,'Exchange-only reps: receive to release, no throw, timed. Ten clean ones before any throw-downs.');
@@ -2830,6 +2905,10 @@ function coachSummaryCard(){
     const g=sumGames(G); basis.push(`${g.pa||0} game PA`);
     if((g.pa||0)>=9&&g.kPct!=null&&g.kPct<=15)push(S,2,'Games',`Puts the ball in play — ${Math.round(g.kPct)}% strikeouts.`);
     if((g.pa||0)>=9&&g.bbPct!=null&&g.bbPct>=15)push(S,1.5,'Games',`Patient — walks in ${Math.round(g.bbPct)}% of plate appearances.`);
+    // passed balls: the receiving/blocking side HitTrax never sees. Some are on the pitcher (and
+    // 12U pitchers are wild), but past ~1.5 a game the catcher's blocks are part of it.
+    if((g.outs||0)>=36&&g.pb6!=null&&g.pb6>=1.5)push(F,2.5,'Catching',`${g.pb} passed balls in ${innStr(g.outs)} innings caught — about ${g.pb6.toFixed(1)} per 6-inning game.`,
+      'Blocking, 10 minutes a session: knees down on short-hop flips in the dirt — chest over the ball, glove closing the gap between the knees, ball kept in front. Start slow and straight on, then add angles.');
     if((g.pa||0)>=9&&g.kPct!=null&&g.kPct>=30)push(F,2.5,'Games',`Striking out in ${Math.round(g.kPct)}% of plate appearances.`,'Two-strike approach: choke up, widen the stance, protect the plate.');
     if(hitRows.length){
       const c=computeFromBalls(hitRows,HH())||{}, bip=Math.max(0,(g.ab||0)-(g.k||0)-(g.hr||0)+(g.sf||0));
@@ -2923,7 +3002,8 @@ function initLog(){
   const el=document.getElementById('logBody'), cat=LOGKIND==='catching';
   if(LOGKIND==='games'){
     el.innerHTML=`<div class="hint" style="margin-bottom:10px">Straight off the GameChanger box score — leave anything blank.
-      Put <b>GP</b> above 1 and this is a season-to-date line rather than one game; don't also enter those games separately.</div>`+
+      For GameChanger's <b>season</b> stats, set the type to <b>Season to date</b>: each new season update replaces the last
+      (only the games it adds are counted), so you can keep copying the whole season line in after every game.</div>`+
       GSECT.map(([title,fields])=>`<label style="margin-top:12px">${esc(title)}</label>
         <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(88px,1fr))">`+
         fields.map(([k,lab])=>`<div><label>${lab}</label><input type="number" step="any" id="s_${k}"></div>`).join('')+
@@ -3168,6 +3248,9 @@ function saveSession(){
     GCOUNT.forEach(([k])=>{const e=document.getElementById('s_'+k); if(!e)return;
       const v=num(e.value); if(v!=null){sum[k]=v;any=true}});
     if(!any){alert('Enter at least one number from the box score.');return}
+    if(num(sum.gp)>1&&!['Season to date','Doubleheader','Tournament'].includes(s.type)&&
+       confirm(`GP is ${sum.gp}. Is this GameChanger's season-to-date line?\n\nOK = season to date (it replaces earlier season lines, nothing is counted twice)\nCancel = ${sum.gp} games played on this date`))
+      s.type='Season to date';
     s.summary=sum; s.mode='game';
   }else{
     const sum={}; let any=false;
@@ -3226,7 +3309,7 @@ function vTrends(){
    <div class="tiles" style="margin-top:14px">
      <div class="tile"><div class="k">First (${esc(first.date)})</div><div class="v">${fmt(TRENDK,first.v)}<small>${MK[TRENDK].u}</small></div></div>
      <div class="tile"><div class="k">Latest (${esc(lastp.date)})</div><div class="v">${fmt(TRENDK,lastp.v)}<small>${MK[TRENDK].u}</small></div></div>
-     <div class="tile"><div class="k">Total change</div><div class="v ${dirClass(TRENDK,chg)}">${chg==null?'—':dstr(TRENDK,chg)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">Total change</div><div class="v ${dirClass(TRENDK,chg)}">${chg==null?'—':dstr(TRENDK,chg)}</div></div>
      <div class="tile"><div class="k">Sessions</div><div class="v">${S.length}</div></div>
    </div></div>
    <div class="card"><h2>All metrics at a glance</h2>
@@ -3251,8 +3334,9 @@ function vSessions(){
   <div class="hint">${S.length} logged · tap a row for the full breakdown</div>
   <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
   S.map(s=>{const st=sessionStats(s);
-   return `<tr class="clickable" onclick="openSession('${esc(s.id)}')"><td>${esc(s.date)}${s.solo
-      ?'<div style="font-size:10.5px;color:var(--amber);font-weight:700;letter-spacing:.04em">SEPARATE ROUND</div>':''}</td>
+   const cap=t=>`<div style="font-size:10.5px;color:var(--amber);font-weight:700;letter-spacing:.04em">${t}</div>`;
+   return `<tr class="clickable" onclick="openSession('${esc(s.id)}')"><td>${esc(s.date)}${s.solo?cap('SEPARATE ROUND'):''}${
+      s.snap?cap(esc(snapLabel(s)).toUpperCase()+' · FROM SEASON TOTALS'):''}${s.base3&&!s.solo?cap('TO 3B · NOT IN 2B TRENDS'):''}</td>
     <td>${typeSelect(s)}</td>
     <td>${s.pitch!=null?Math.round(s.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>`+
     cols.map((c,i)=>{const v=num(st[c[0]]);
@@ -3306,6 +3390,9 @@ function openSession(id){
   document.getElementById('dlgBody').innerHTML=`
    ${(s.location||s.pitch||(kindOf(s)==='hitting'&&(s.hh||dayHHof(s))))?`<div class="hint">${[s.location,s.pitch?s.pitch+' mph pitch':'',
       kindOf(s)==='hitting'?`hard-hit scored at ${s.hh||dayHHof(s)}+ mph`:''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
+   ${isSnap(s)?`<div class="note" style="margin:8px 0">GameChanger season totals through ${esc(s.date)}${num((s.summary||{}).gp)?` (${num(s.summary.gp)} games)`:''}.
+     A newer season update replaces this one in the totals — only the games it adds count, so nothing is counted twice.</div>`:''}
+   ${(s.base3||is3B(s))?'<div class="hint" style="margin:6px 0">Throws to third — kept out of his 2B pop-time trends, bests and age chart.</div>':''}
    <div class="tiles">${tiles}</div>
    ${(()=>{const o=outcomeLine(balls); return o?`<div style="margin-top:14px"><label>Simulated at-bats</label>
      <div class="row" style="gap:16px;align-items:baseline">
@@ -3388,7 +3475,45 @@ function delSession(id){
 }
 
 /* ---------- report ---------- */
+/* Games get their own report: a season line, the catching and fielding lines, and a game log —
+   none of the cage's exit-velo machinery applies to a box score. */
+function gamesReport(){
+  const S=sorted('games');
+  if(!S.length)return '<div class="card"><div class="empty">Log a game (or a GameChanger season line) to build a game report.</div></div>';
+  const t=sumGames(S.map(s=>sessionStats(s)));
+  const pct=v=>v==null?'—':Math.round(v)+'%', a3=v=>v==null?'—':avg3(v), cnt=v=>num(v)==null?0:num(v);
+  const cell=(label,v)=>`<td><div class="hint" style="font-size:11px">${label}</div><div style="font-weight:800;font-size:16px">${v}</div></td>`;
+  const strip=cells=>`<div class="scroll"><table><tbody><tr>${cells.join('')}</tr></tbody></table></div>`;
+  const bat=strip([cell('G',t.gp),cell('PA',cnt(t.pa)),cell('AB',cnt(t.ab)),cell('H',cnt(t.h)),cell('2B',cnt(t.d)),cell('3B',cnt(t.t)),
+    cell('HR',cnt(t.hr)),cell('BB',cnt(t.bb)),cell('SO',cnt(t.k)),cell('HBP',cnt(t.hbp)),cell('RBI',cnt(t.rbi)),cell('R',cnt(t.r)),cell('SB',cnt(t.sb))]);
+  const rates=strip([cell('AVG',a3(t.avg)),cell('OBP',a3(t.obp)),cell('SLG',a3(t.slg)),cell('OPS',a3(t.ops)),cell('K%',pct(t.kPct)),
+    cell('BB%',pct(t.bbPct))].concat(t.qabPct!=null?[cell('QAB%',pct(t.qabPct))]:[],t.psPA!=null?[cell('P/PA',t.psPA.toFixed(2))]:[],
+    t.babip!=null?[cell('BABIP',a3(t.babip))]:[]));
+  const catchLine=(t.outs||t.pb!=null||t.csa!=null||t.sba!=null)?strip([cell('INN',innStr(t.outs)),cell('PB',cnt(t.pb)),
+    cell('PB / 6 inn',t.pb6!=null?t.pb6.toFixed(1):'—'),cell('SB allowed',cnt(t.sba)),cell('CS',cnt(t.csa)),cell('CS%',pct(t.csPct))]):'';
+  const fieldLine=(t.po!=null||t.a!=null||t.e!=null)?strip([cell('PO',cnt(t.po)),cell('A',cnt(t.a)),cell('E',cnt(t.e)),
+    cell('FPCT',t.fpct!=null?t.fpct.toFixed(3).replace(/^0/,''):'—')]):'';
+  const log=S.slice().reverse().map(s=>{const g=sessionStats(s);
+    const what=s.snap?snapLabel(s)+' <small style="color:var(--dim)">(season update)</small>':esc(s.type||'Game');
+    return `<tr><td>${esc(s.date)}</td><td>${what}</td><td>${cnt(g.pa)}</td><td>${cnt(g.h)}-${cnt(g.ab)}</td><td>${cnt(g.xbh)}</td>
+      <td>${cnt(g.bb)}</td><td>${cnt(g.k)}</td><td>${cnt(g.rbi)}</td><td style="font-weight:700">${a3(g.avg)}/${a3(g.obp)}/${a3(g.slg)}</td></tr>`}).join('');
+  return `<div class="card">
+    <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
+      <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
+    <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — game report</h2>
+    <div class="hint">${esc(S[0].date)} → ${esc(S[S.length-1].date)} · ${t.gp} game${t.gp>1?'s':''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
+    <label style="margin-top:14px">At the plate</label>${bat}${rates}
+    ${catchLine?`<label style="margin-top:14px">Behind the plate</label>${catchLine}`:''}
+    ${fieldLine?`<label style="margin-top:14px">In the field</label>${fieldLine}`:''}
+    ${(t.pa||0)<30?`<div class="hint" style="margin-top:10px">${t.pa||0} plate appearances is a small sample — a single hit moves the average a lot this early.</div>`:''}
+   </div>
+   <div class="card"><h2>OPS — season to date</h2>${lineChart(series('ops'),'ops')}</div>
+   <div class="card"><h2>Game log</h2><div class="hint">Season updates from GameChanger show as the games they added since the one before.</div>
+     <div class="scroll"><table><thead><tr><th>Date</th><th>Game</th><th>PA</th><th>H-AB</th><th>XBH</th><th>BB</th><th>SO</th><th>RBI</th><th>AVG/OBP/SLG</th></tr></thead>
+     <tbody>${log}</tbody></table></div></div>`;
+}
 function vReport(){
+  if(VIEWKIND==='games')return gamesReport();
   const S=sorted();
   if(S.length<2)return '<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
   const from=S[0].date,to=S[S.length-1].date, cat=VIEWKIND==='catching';
@@ -3425,10 +3550,20 @@ function vReport(){
    `</tbody></table></div></div>`;
 }
 function copyReport(){
+  if(VIEWKIND==='games'){
+    const S=sorted('games'), g=sumGames(S.map(s=>sessionStats(s))), f=v=>v==null?'—':avg3(v);
+    let txt=`${DB.player.name||'Player'} — game report\n${S[0].date} → ${S[S.length-1].date} · ${g.gp} games · ${g.pa||0} PA\n\n`+
+      `${g.h||0}-for-${g.ab||0}, ${f(g.avg)}/${f(g.obp)}/${f(g.slg)}, OPS ${f(g.ops)}\n`+
+      `${g.xbh||0} XBH · ${g.rbi||0} RBI · ${g.r||0} R · ${g.bb||0} BB · ${g.k||0} SO · ${g.sb||0} SB\n`+
+      (g.kPct!=null?`K ${Math.round(g.kPct)}% · BB ${Math.round(g.bbPct)}%${g.qabPct!=null?` · QAB ${Math.round(g.qabPct)}%`:''}\n`:'')+
+      (g.outs?`Catching: ${innStr(g.outs)} inn · ${g.pb||0} PB${g.pb6!=null?` (${g.pb6.toFixed(1)} per 6)`:''} · ${g.csa||0} CS of ${(g.csa||0)+(g.sba||0)} attempts\n`:'');
+    navigator.clipboard.writeText(txt).then(()=>alert('Report copied.'),()=>alert('Copy failed.'));
+    return;
+  }
   const S=sorted(); let t=`${DB.player.name||'Player'} — HitTrax progress\n${S[0].date} → ${S[S.length-1].date} · ${S.length} sessions\n\n`;
   KIND[VIEWKIND].metrics.forEach(m=>{const s2=series(m.k); if(s2.length<2)return;
     const f=s2[0].v,l=s2[s2.length-1].v;
-    t+=`${m.n}: ${fmt(m.k,f)} → ${fmt(m.k,l)} (${dstr(m.k,l-f)}${m.u})\n`});
+    t+=`${m.n}: ${fmt(m.k,f)} → ${fmt(m.k,l)} (${dstr(m.k,l-f)})\n`});
   navigator.clipboard.writeText(t).then(()=>alert('Report copied.'),()=>alert('Copy failed.'));
 }
 
