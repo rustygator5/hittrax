@@ -1645,6 +1645,20 @@ function outcomeCard(balls,where){
 /* The hitter's own strike zone, as the export measures it, with the contact point of every
    ball plotted in it. HitTrax exports POI X/Y (where the bat met the ball) rather than the
    pitch's own coordinates — the pitch itself is only located by its zone number. */
+/* Horizontal position of a pitch in column units: -1 left third, 0 middle, +1 right third.
+   Zones 10/12 (above/below, left half) and 11/13 (right half) sit just outside those columns.
+   The calibration is a shift of this position, so it moves every pitch — including the ones
+   HitTrax put outside the zone, which a zone-number remap could never reach. */
+function zonePos(z){
+  z=num(z); if(z==null)return null;
+  const base={1:-1,4:-1,7:-1,2:0,5:0,8:0,3:1,6:1,9:1,10:-1.7,12:-1.7,11:1.7,13:1.7}[z];
+  if(base==null)return null;
+  const cal=DB.settings.zoneCal||'none';
+  if(cal==='mirror')return -base;
+  if(cal==='left')return base-1;
+  if(cal==='right')return base+1;
+  return base;
+}
 function plateChart(balls){
   const b=balls.filter(x=>num(x.poiy)!=null&&+x.poiy>1);
   if(b.length<2)return'';
@@ -1655,10 +1669,14 @@ function plateChart(balls){
   const Y=v=>P.t+(H-P.t-P.b)*(1-v/hiY);
   // horizontal position comes from the pitch's zone column — the one piece of left/right the
   // export actually gives. 1/4/7 left, 2/5/8 middle, 3/6/9 right, 10/12 and 11/13 off the plate.
-  const COL={1:1,4:1,7:1,2:2,5:2,8:2,3:3,6:3,9:3,10:0,12:0,11:4,13:4};
-  const lanes=5, laneW=(W-P.l-P.r)/lanes;
-  const laneX=i=>P.l+laneW*(i+0.5);
-  const zx1=P.l+laneW, zx2=P.l+laneW*4;
+  // fit the horizontal scale to the positions actually present, so a calibration shift can
+  // push pitches outside the zone without pushing them off the canvas
+  const poss=b.map(x=>zonePos(x.zone)).filter(v=>v!=null);
+  const pLo=Math.min(-1.9,...poss.map(v=>v-0.35)), pHi=Math.max(1.9,...poss.map(v=>v+0.35));
+  const colX=pos=>P.l+(W-P.l-P.r)*((pos-pLo)/(pHi-pLo));
+  const laneW=(colX(1)-colX(0));
+  const zx1=colX(-1.5), zx2=colX(1.5);
+  const laneX=i=>colX(i-2);
   const evs=b.map(x=>+x.ev).filter(v=>v>0), lo=Math.min(...evs), hi=Math.max(...evs);
   const heat=v=>{const f=hi>lo?(v-lo)/(hi-lo):.6;
     const s=[[61,109,240],[47,191,113],[242,177,60],[250,70,22]];
@@ -1674,20 +1692,22 @@ function plateChart(balls){
     zone+=`<line x1="${xx.toFixed(1)}" y1="${Y(zt).toFixed(1)}" x2="${xx.toFixed(1)}" y2="${Y(zb).toFixed(1)}" stroke="rgba(233,238,251,.28)"/>
       <line x1="${zx1.toFixed(1)}" y1="${yy.toFixed(1)}" x2="${zx2.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="rgba(233,238,251,.28)"/>`;}
   const dots=b.map((x,i)=>{
-    const lane=COL[zoneFix(x.zone)]!=null?COL[zoneFix(x.zone)]:2;
-    const jitter=((i*37)%100/100-0.5)*laneW*0.62;        // deterministic spread inside the lane
-    const cx=laneX(lane)+jitter, cy=Y(+x.poiy);
+    const pos=zonePos(x.zone);
+    const jitter=((i*37)%100/100-0.5)*laneW*0.55;        // deterministic spread inside the lane
+    const cx=(pos==null?laneX(2):colX(pos))+jitter, cy=Y(+x.poiy);
     return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${x.ev>0?heat(+x.ev):'#93a4c6'}"
       stroke="#0b1220" stroke-width="1.2" opacity=".92"><title>${(+x.ev||0).toFixed(1)} mph, met at ${(+x.poiy).toFixed(1)}" high${
       num(x.zone)!=null?` · zone ${x.zone}`:''}${x.result?' — '+x.result:''}</title></circle>`}).join('');
-  const labels=['Off plate','Left third','Middle','Right third','Off plate']
-    .map((l,i)=>`<text x="${laneX(i).toFixed(1)}" y="${H-P.b+18}" fill="#6c7fa5" font-size="9.5" text-anchor="middle">${l}</text>`).join('');
+  const labels=[[-1.7,'Off the plate'],[-1,'Left third'],[0,'Middle'],[1,'Right third'],[1.7,'Off the plate']]
+    .filter(([pos])=>pos>pLo+0.15&&pos<pHi-0.15&&(Math.abs(pos)<1.5||laneW>78))   // drop the outer pair when it would collide
+    .map(([pos,l])=>`<text x="${colX(pos).toFixed(1)}" y="${H-P.b+18}" fill="#6c7fa5" font-size="9.5" text-anchor="middle">${l}</text>`).join('');
   const pw=(zx2-zx1)*0.9, px=(zx1+zx2)/2, py=H-P.b+32;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" style="max-width:${W}px;margin:0 auto">
     ${grid}${zone}${dots}${labels}
     <path d="M${px-pw/2} ${py-7} L${px+pw/2} ${py-7} L${px+pw/2} ${py} L${px} ${py+8} L${px-pw/2} ${py} Z" fill="#94a3c7" opacity=".5"/>
-    <text x="${(zx2+8).toFixed(1)}" y="${(Y(zt)+4).toFixed(1)}" fill="#93a4c6" font-size="9.5">zone top ${zt.toFixed(0)}"</text>
-    <text x="${(zx2+8).toFixed(1)}" y="${(Y(zb)+4).toFixed(1)}" fill="#93a4c6" font-size="9.5">bottom ${zb.toFixed(0)}"</text>
+    ${(()=>{const room=W-P.r-zx2>74, x=room?zx2+8:zx1-8, anchor=room?'start':'end';
+      return `<text x="${x.toFixed(1)}" y="${(Y(zt)+4).toFixed(1)}" fill="#93a4c6" font-size="9.5" text-anchor="${anchor}">zone top ${zt.toFixed(0)}"</text>
+        <text x="${x.toFixed(1)}" y="${(Y(zb)+4).toFixed(1)}" fill="#93a4c6" font-size="9.5" text-anchor="${anchor}">bottom ${zb.toFixed(0)}"</text>`})()}
    </svg>
    <div class="legend"><span>Catcher's view · height is where the bat met the ball</span>
      <span style="margin-left:auto"><i style="background:${heat(lo)}"></i>${lo.toFixed(0)} mph
@@ -1868,7 +1888,9 @@ function zoneCard(balls,where){
   const n=balls.filter(b=>num(b.zone)!=null).length;
   return `<div class="card"><div class="row" style="align-items:baseline">
      <div><h2>Strike-zone heat map${zoneCalLabel()?` <span class="chip a">${zoneCalLabel()}</span>`:''}</h2>
-       <div class="hint">${n} batted ball${n>1?'s':''} ${where}${zoneCalLabel()?' · zones relabelled for display, measurements untouched':''}</div></div>
+       <div class="hint">${n} batted ball${n>1?'s':''} ${where}${zoneCalLabel()
+         ?' · the 3×3 is relabelled for display; the outer ring is above/below the zone, which a sideways shift can’t move'
+         :''}</div></div>
      <div class="seg" style="margin-left:auto">${Object.keys(ZMETRICS).map(k=>
        `<button class="${ZM===k?'on':''}" onclick="ZM='${k}';render()">${ZMETRICS[k]}</button>`).join('')}</div></div>
    ${zoneMap(balls)}${zoneBalanceNote(balls)}${zoneSplit(balls)}</div>`;
