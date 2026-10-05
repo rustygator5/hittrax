@@ -115,6 +115,12 @@ dashboard and each session show that line: batting average with hits over at-bat
 bases, outs, and a count of each outcome (1B x 15, Out x 15 ...). Fouls are excluded, as they are
 not at-bats.
 
+### Launch angle vs exit velo
+The report's LA-vs-velocity chart: average exit velo in each 10-degree launch-angle band from
+-30 to +70, drawn as one line per session so the last three sit on top of each other (newest
+first), with ball counts per band as bars underneath. Hollow dots mark a band holding a single
+ball. A session's own line also appears in its breakdown, above the per-ball scatter.
+
 ### Left / Centre / Right splits
 The report's L/C/R block: fair territory in three 30-degree wedges from the catcher's view
 (left -45 to -15, centre -15 to +15, right +15 to +45). Share of balls, count, avg exit velo, avg

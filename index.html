@@ -1565,6 +1565,68 @@ function thirdsCard(balls,where){
    <div class="legend"><span><i style="background:#f2b13c"></i>Left</span><span><i style="background:#2fbf71"></i>Centre</span><span><i style="background:#3d6df0"></i>Right</span></div>
   </div>`;
 }
+/* The report's LA-vs-velocity chart: average exit velo in each launch-angle bin, one line per
+   session so two outings sit on top of each other, with the ball counts as bars underneath. */
+const LAV_COLS=['#FA4616','#2fbf71','#3d6df0'];
+function laVeloBins(balls,step){
+  const lo=-30, hi=70, bins=[];
+  for(let a=lo;a<hi;a+=step){
+    const g=balls.filter(b=>num(b.la)!=null&&num(b.ev)>0&&+b.la>=a&&+b.la<a+step);
+    bins.push({a:a+step/2,n:g.length,ev:g.length?g.reduce((x,c)=>x+ +c.ev,0)/g.length:null});
+  }
+  return bins;
+}
+function laVeloChart(series,step){
+  step=step||10;
+  const data=series.map((s,i)=>({...s,bins:laVeloBins(s.balls,step),col:LAV_COLS[i%3]}))
+    .filter(s=>s.bins.some(b=>b.n));
+  if(!data.length)return'';
+  const evs=data.flatMap(s=>s.bins.filter(b=>b.ev!=null).map(b=>b.ev));
+  if(evs.length<2)return'';
+  let lo=Math.floor((Math.min(...evs)-4)/5)*5, hi=Math.ceil((Math.max(...evs)+4)/5)*5;
+  const maxN=Math.max(1,...data.flatMap(s=>s.bins.map(b=>b.n)));
+  const W=720,H=330,P={l:42,r:14,t:16,b:52}, barH=58;
+  const plotB=H-P.b-barH;
+  const X=a=>P.l+(W-P.l-P.r)*((a+30)/100);
+  const Y=v=>P.t+(plotB-P.t)*(1-(v-lo)/(hi-lo));
+  let g='';
+  for(let a=-30;a<=70;a+=10)g+=`<line x1="${X(a).toFixed(1)}" x2="${X(a).toFixed(1)}" y1="${P.t}" y2="${H-P.b}" stroke="#27395c"/>
+    <text x="${X(a).toFixed(1)}" y="${H-P.b+16}" fill="#6c7fa5" font-size="10" text-anchor="middle">${a}°</text>`;
+  const tick=(hi-lo)>45?10:5;                       // whole-number mph gridlines
+  for(let v=lo;v<=hi+0.01;v+=tick){
+    g+=`<line x1="${P.l}" x2="${W-P.r}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="#27395c"/>
+      <text x="${P.l-6}" y="${(Y(v)+4).toFixed(1)}" fill="#6c7fa5" font-size="10" text-anchor="end">${Math.round(v)}</text>`;}
+  // counts, side by side per bin
+  const bw=(W-P.l-P.r)/(100/step), slot=bw*0.72/data.length;
+  data.forEach((s,si)=>s.bins.forEach(b=>{
+    if(!b.n)return;
+    const h=(b.n/maxN)*(barH-14), x=X(b.a)-bw*0.36+si*slot;
+    g+=`<rect x="${x.toFixed(1)}" y="${(H-P.b-h).toFixed(1)}" width="${slot.toFixed(1)}" height="${h.toFixed(1)}"
+      fill="${s.col}" opacity=".55" rx="1.5"><title>${esc(s.label)} — ${b.n} ball${b.n>1?'s':''} at ${b.a-step/2}–${b.a+step/2}°</title></rect>`;}));
+  // the lines
+  data.forEach(s=>{
+    const pts=s.bins.filter(b=>b.ev!=null).map(b=>[X(b.a),Y(b.ev),b]);
+    if(pts.length>1)g+=`<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}"
+      fill="none" stroke="${s.col}" stroke-width="2.5" stroke-linejoin="round"/>`;
+    pts.forEach(p=>{g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${p[2].n>1?4.5:3.5}"
+      fill="${p[2].n>1?s.col:'#0d1526'}" stroke="${s.col}" stroke-width="2">
+      <title>${esc(s.label)} — ${p[2].ev.toFixed(1)} mph avg from ${p[2].n} ball${p[2].n>1?'s':''} at ${p[2].a-step/2}–${p[2].a+step/2}°</title></circle>`;});
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}
+    <text x="${P.l}" y="${H-4}" fill="#6c7fa5" font-size="10">launch angle →</text>
+    <text x="${W-P.r}" y="${H-4}" fill="#6c7fa5" font-size="10" text-anchor="end">bars = balls in that bin</text></svg>
+   <div class="legend">${data.map(s=>`<span><i style="background:${s.col}"></i>${esc(s.label)}</span>`).join('')}
+     <span style="margin-left:auto">${step}° bins · hollow dots are a single ball</span></div>`;
+}
+function laVeloCard(){
+  const S=sorted().slice(-3).reverse().filter(s=>(s.balls||[]).some(b=>num(b.la)!=null));
+  if(!S.length)return'';
+  const series=S.map(s=>({label:s.date+(s.solo?' · separate':'')+' ('+(s.balls||[]).length+')',balls:s.balls||[]}));
+  const chart=laVeloChart(series); if(!chart)return'';
+  return `<div class="card"><h2>Launch angle vs exit velo</h2>
+   <div class="hint">Average exit velo in each launch-angle band — ${S.length>1?`the last ${S.length} sessions on top of each other, newest first`:'this session'}</div>
+   ${chart}</div>`;
+}
 function zoneCard(balls,where){
   if(!balls.some(b=>num(b.zone)!=null))return'';
   const n=balls.filter(b=>num(b.zone)!=null).length;
@@ -1692,6 +1754,7 @@ function vDash(){
   ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
   ${cat?'':thirdsCard(last.balls||[],'on '+last.date)}
+  ${cat?'':laVeloCard()}
   ${cat?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
   ${cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[])}
   ${cat?throwBarsCard(last.throws||[]):''}
@@ -2270,7 +2333,8 @@ function openSession(id){
    ${(()=>{const c=thirdsCard(balls,'');return c?c.replace('<div class="card">','<div style="margin-top:18px">'):''})()}
    ${plateChart(balls)?`<div style="margin-top:18px"><label>Contact point in the zone</label>${plateChart(balls)}</div>`:''}
    ${balls.some(b=>num(b.zone)!=null)?`<div style="margin-top:18px"><label>Strike-zone heat map — ${ZMETRICS[ZM].toLowerCase()}</label>${zoneMap(balls)}${zoneSplit(balls)}</div>`:''}
-   ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
+   ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>
+     ${laVeloChart([{label:s.date,balls}])||''}${scatterLAEV(balls,HH())}</div>`:''}
    ${balls.some(b=>landing(b))?`<div style="margin-top:18px"><label>Spray chart</label>${fieldChart(balls)}</div>`:''}
    ${flightCard(balls,'flt_dlg','Flight paths').replace('<div class="card">','<div style="margin-top:18px">')}
    ${s.notes?`<div style="margin-top:16px"><label>Notes</label><div style="background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px">${esc(s.notes)}</div></div>`:''}
