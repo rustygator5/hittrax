@@ -186,13 +186,17 @@ const SUPA_URL='https://xuipllbtrsebavtffjdy.supabase.co';
 const SUPA_KEY='sb_publishable_4Uc4-PMVI4Bsodk6FYYEjg_h2o5xZ0j';
 const AUTH=SUPA_URL+'/auth/v1', REST=SUPA_URL+'/rest/v1';
 const H={'apikey':SUPA_KEY,'Content-Type':'application/json'};
-const SESS_KEY=KEY+'.session', NOBORROW=KEY+'.noborrow', BORROW=['budgetApp.session','hubApp.session'];
+const SESS_KEY=KEY+'.session', NOBORROW=KEY+'.noborrow', DEADTOK=KEY+'.deadtok';
+const BORROW=['budgetApp.session','hubApp.session'];
+let EXPIRED=false;
 let session=null, sessSrc=null, pushTimer=null, pollTimer=null, serverTs=0, syncState='local';
 
 function readSession(){
   const keys=[SESS_KEY].concat(localStorage.getItem(NOBORROW)?[]:BORROW);
   for(const k of keys){
     try{const raw=localStorage.getItem(k); if(!raw)continue; const s=JSON.parse(raw);
+      const dead=localStorage.getItem(DEADTOK);
+      if(dead&&s&&s.refresh_token&&s.refresh_token.slice(-24)===dead)continue;   // known-expired
       if(s&&s.access_token&&s.user&&s.user.id){session=s;sessSrc=k;return}}catch(e){}
   }
 }
@@ -202,7 +206,8 @@ function authStore(s){
   // write back to whichever app's key the session came from, so that app isn't logged out
   // when the refresh token rotates
   try{localStorage.setItem(SESS_KEY,j); if(sessSrc&&sessSrc!==SESS_KEY)localStorage.setItem(sessSrc,j);
-    localStorage.removeItem(NOBORROW)}catch(e){}
+    localStorage.removeItem(NOBORROW); localStorage.removeItem(DEADTOK)}catch(e){}
+  EXPIRED=false;
 }
 function authHeaders(){return {...H,'Authorization':'Bearer '+((session&&session.access_token)||'')}}
 async function authSignIn(email,pw){const r=await fetch(AUTH+'/token?grant_type=password',{method:'POST',headers:H,body:JSON.stringify({email,password:pw})});return r.json()}
@@ -210,9 +215,22 @@ async function authSignUp(email,pw){const r=await fetch(AUTH+'/signup',{method:'
 async function authRecover(email){try{await fetch(AUTH+'/recover',{method:'POST',headers:H,body:JSON.stringify({email})})}catch(e){}}
 async function authRefresh(){
   if(!session||!session.refresh_token)return false;
-  try{const r=await fetch(AUTH+'/token?grant_type=refresh_token',{method:'POST',headers:H,body:JSON.stringify({refresh_token:session.refresh_token})});
-    if(!r.ok)return false; const s=await r.json(); if(s&&s.access_token){authStore(s);return true}}catch(e){}
+  try{
+    const r=await fetch(AUTH+'/token?grant_type=refresh_token',{method:'POST',headers:H,body:JSON.stringify({refresh_token:session.refresh_token})});
+    if(r.ok){const s=await r.json(); if(s&&s.access_token){authStore(s);return true}}
+    if([400,401,403,422].includes(r.status)){sessionExpired();return 'dead'}   // server says this token is finished
+  }catch(e){}                                                                  // thrown = offline, keep the session
   return false;
+}
+function sessionExpired(){
+  try{
+    if(session&&session.refresh_token)localStorage.setItem(DEADTOK,session.refresh_token.slice(-24));
+    localStorage.removeItem(SESS_KEY);                 // never touch the key we borrowed it from
+  }catch(e){}
+  session=null; sessSrc=null; EXPIRED=true;
+  clearInterval(pollTimer); clearTimeout(pushTimer);
+  saveLocal();              // keep what's in memory — write it to the signed-out cache, don't reload
+  setSync('local');
 }
 function signOut(){
   clearInterval(pollTimer); clearTimeout(pushTimer);
@@ -256,7 +274,7 @@ async function cloudGet(retry){
   if(!session)return undefined;
   try{
     const r=await fetch(REST+'/hittrax?user_id=eq.'+session.user.id+'&select=data,updated_at',{headers:authHeaders()});
-    if(r.status===401&&!retry)return (await authRefresh())?cloudGet(true):undefined;
+    if(r.status===401&&!retry){const ok=await authRefresh(); return ok===true?cloudGet(true):undefined;}
     if(r.status===404)return 'nosetup';
     if(!r.ok)throw 0;
     const rows=await r.json(); return rows[0]||null;
@@ -269,7 +287,9 @@ async function cloudSave(retry){
     const r=await fetch(REST+'/hittrax?on_conflict=user_id',{method:'POST',
       headers:{...authHeaders(),'Prefer':'resolution=merge-duplicates,return=minimal'},
       body:JSON.stringify({user_id:session.user.id,data:DB,updated_at:ts})});
-    if(r.status===401&&!retry){ if(await authRefresh())return cloudSave(true); setSync('offline'); return; }
+    if(r.status===401&&!retry){ const ok=await authRefresh();
+      if(ok===true)return cloudSave(true);
+      if(ok!=='dead')setSync('offline'); return; }
     if(r.status===404){setSync('setup');return}
     if(!r.ok)throw 0;
     serverTs=new Date(ts).getTime(); setSync('synced');
@@ -283,6 +303,7 @@ function busy(){ // don't yank the page out from under an open form
 async function pullMerge(initial){
   if(!session)return;
   const row=await cloudGet();
+  if(!session){setSync('local');render();return}        // the sign-in died mid-call
   if(row===undefined){setSync('offline');return}
   if(row==='nosetup'){setSync('setup');return}
   if(row&&row.data&&row.data.sessions){
@@ -1698,9 +1719,10 @@ function dashPicker(){
 function syncBanner(){
   if(!DB.sessions.length)return'';
   if(!session)return `<div class="card note warn" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-    <div><b>Saved on this device only.</b> Sign in with your Wilson Dashboard account here <i>and</i> on your phone,
-      and every session shows up on both.</div>
-    <button class="btn" style="margin-left:auto" onclick="openAccount()">Sign in to sync</button></div>`;
+    <div>${EXPIRED
+      ?'<b>Your sign-in expired.</b> Sign in again and this device picks up where it left off — nothing logged here is lost.'
+      :'<b>Saved on this device only.</b> Sign in with your Wilson Dashboard account here <i>and</i> on your phone, and every session shows up on both.'}</div>
+    <button class="btn" style="margin-left:auto" onclick="openAccount()">${EXPIRED?'Sign in again':'Sign in to sync'}</button></div>`;
   if(syncState==='setup')return `<div class="card note warn"><b>Signed in, but the cloud table is missing.</b>
     Run <span class="mono">supabase-setup.sql</span> once in Supabase — everything here is safe on this device meanwhile.</div>`;
   if(syncState==='offline')return `<div class="card note warn" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -2533,6 +2555,8 @@ function wipe(){
 (function(){const el=document.getElementById('hubLink');
   if(el&&location.pathname.replace(/\/+$/,'')!=='')el.hidden=false;})();
 readSession();
+// a device that already knows its borrowed sign-in died should still say so, not just "local"
+if(!session)try{EXPIRED=!!localStorage.getItem(DEADTOK)}catch(e){}
 DB=load();
 // open on whichever discipline was logged most recently
 (function(){const last=DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:1).pop();

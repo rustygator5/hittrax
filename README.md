@@ -181,7 +181,10 @@ tombstone so a removed session doesn't come back from another device. Nothing is
 except the player profile, which follows whichever device was touched most recently.
 
 If a browser is already signed in to the Budget app or the hub on this domain, HitTrax borrows
-that session automatically - no second login.
+that session automatically - no second login. If that borrowed sign-in has expired, the app says
+so and offers a re-sign-in rather than sitting on "Offline": a refresh the server rejects (as
+opposed to a network failure) retires that token, so it is not picked up again, while a fresh
+login in any of the apps is borrowed as normal.
 
 **One-time setup:** run `supabase-setup.sql` in the Supabase SQL editor to create the `hittrax`
 table. Until then the header pill reads "Setup needed" and everything stays local (nothing is lost -
