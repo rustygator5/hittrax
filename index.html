@@ -167,7 +167,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.9';
+const APP_BUILD='2026.10.05.10';
 // ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
 // so the regression suite can run on the same device as real data without touching it
 const TEST=/[?&]test=1(&|$)/.test(location.search);
@@ -177,7 +177,7 @@ const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.rando
 // older rounds pick up whatever the app can now understand.
 const PARSER_V=4;
 const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],
-  files:{},parserV:PARSER_V,deleted:[],goals:[],updatedAt:0});
+  files:{},parserV:PARSER_V,deleted:[],goals:[],plans:[],playerAt:0,settingsAt:0,updatedAt:0});
 let DB=blank();
 function lsKey(){return session?KEY+'.data.'+session.user.id:KEY}
 /* ============================== input hygiene ==============================
@@ -261,7 +261,7 @@ function sanitizeDoc(d){
     .map(x=>({id:x.id,ts:finite(x.ts)||0}));
   const p=d.player||{};
   out.player={name:shortText(p.name,80)||'',age:(finite(p.age)!==undefined&&+p.age>4&&+p.age<60)?String(+p.age):'',
-    level:shortText(p.level,60)||'',bats:oneOf(p.bats,['R','L','S'])||'R'};
+    level:shortText(p.level,60)||'',bats:oneOf(p.bats,['R','L','S'])||'R',dob:SAFE_DATE.test(p.dob||'')?p.dob:''};
   out.settings=sanitizeSettings(d.settings);
   out.files={};
   if(d.files&&typeof d.files==='object')Object.keys(d.files).forEach(id=>{
@@ -277,7 +277,16 @@ function sanitizeDoc(d){
     return {id:g.id,kind,metric:g.metric,target,start,created:SAFE_DATE.test(g.created||'')?g.created:'',
       by:SAFE_DATE.test(g.by||'')?g.by:null,mtime:finite(g.mtime)||1};
   }).filter(Boolean);
+  out.plans=(Array.isArray(d.plans)?d.plans:[]).slice(-30).map(x=>{
+    if(!x||!SAFE_ID.test(x.id||''))return null;
+    const kind=oneOf(x.kind,['hitting','catching']), metric=oneOf(x.metric,PLANK), dir=oneOf(x.dir,['up','down']);
+    const target=finite(x.target), base=finite(x.base);
+    if(!kind||!metric||!dir||target===undefined||!SAFE_DATE.test(x.created||''))return null;
+    return {id:x.id,kind,metric,dir,target,base:base===undefined?null:base,created:x.created,
+      text:shortText(x.text,240)||'',drill:shortText(x.drill,400)||'',mtime:finite(x.mtime)||1};
+  }).filter(Boolean);
   out.parserV=finite(d.parserV)||0;
+  out.playerAt=finite(d.playerAt)||0; out.settingsAt=finite(d.settingsAt)||0;
   out.updatedAt=finite(d.updatedAt)||0;
   return out;
 }
@@ -367,8 +376,13 @@ function mergeDocs(a,b){
   const out=blank();
   out.files=Object.assign({},a.files||{},b.files||{});
   out.parserV=Math.max(a.parserV||0,b.parserV||0);
-  out.player=newer.player&&newer.player.name!==undefined?newer.player:older.player;
-  out.settings=newer.settings||older.settings||{};
+  /* player and settings go to whichever side last *edited them* — not whichever doc was saved last,
+     or a phone logging a session offline would put back a zone calibration changed on the laptop.
+     Docs from before these stamps existed fall back to the old rule. */
+  const pick=(k,at)=>(a[at]||b[at])?((a[at]||0)>=(b[at]||0)?a[k]:b[k]):(newer[k]||older[k]);
+  out.player=pick('player','playerAt')||blank().player;
+  out.settings=pick('settings','settingsAt')||{};
+  out.playerAt=Math.max(a.playerAt||0,b.playerAt||0); out.settingsAt=Math.max(a.settingsAt||0,b.settingsAt||0);
   out.updatedAt=Math.max(a.updatedAt||0,b.updatedAt||0);
   const del={};
   [].concat(a.deleted||[],b.deleted||[]).forEach(d=>{del[d.id]=Math.max(del[d.id]||0,d.ts||0)});
@@ -382,6 +396,10 @@ function mergeDocs(a,b){
   [].concat(a.goals||[],b.goals||[]).forEach(g=>{const p=gmap[g.id]; if(!p||(g.mtime||0)>(p.mtime||0))gmap[g.id]=g});
   Object.keys(del).forEach(id=>{const g=gmap[id]; if(g&&(g.mtime||0)>del[id])return; delete gmap[id]});
   out.goals=Object.keys(gmap).map(k=>gmap[k]);
+  const pmap={};
+  [].concat(a.plans||[],b.plans||[]).forEach(x=>{const p=pmap[x.id]; if(!p||(x.mtime||0)>(p.mtime||0))pmap[x.id]=x});
+  Object.keys(del).forEach(id=>{const x=pmap[id]; if(x&&(x.mtime||0)>del[id])return; delete pmap[id]});
+  out.plans=Object.keys(pmap).map(k=>pmap[k]);
   out.deleted=Object.keys(del).map(id=>({id,ts:del[id]}));
   return out;
 }
@@ -397,7 +415,14 @@ async function cloudGet(retry){
 }
 async function cloudSave(retry){
   if(!session)return;
-  setSync('saving'); const ts=new Date().toISOString();
+  setSync('saving');
+  // read-merge-write: fold in anything another device uploaded since our last pull, so this
+  // upload can never drop it (union by id, newest edit wins, deletes honoured)
+  if(!retry){const row=await cloudGet(); if(!session)return;
+    if(row==='nosetup'){setSync('setup');return}
+    if(row&&row.data&&row.data.sessions){const m=mergeDocs(DB,sanitizeDoc(row.data));
+      if(JSON.stringify(m)!==JSON.stringify(DB)){DB=m; saveLocal(); if(!busy())render()}}}
+  const ts=new Date().toISOString();
   try{
     const r=await fetch(REST+'/hittrax?on_conflict=user_id',{method:'POST',
       headers:{...authHeaders(),'Prefer':'resolution=merge-duplicates,return=minimal'},
@@ -479,7 +504,7 @@ function offerImport(payload){
 let PENDING_IMPORT=null;
 function acceptImport(){
   const now=Date.now(), p=PENDING_IMPORT||{};
-  if(p.set)Object.assign(DB.settings,p.set);
+  if(p.set){Object.assign(DB.settings,p.set); DB.settingsAt=now}
   (p.list||[]).forEach((s,i)=>{
     DB.sessions.push({...s,id:uid(),mtime:now+i});
   });
@@ -570,11 +595,34 @@ const BENCH=[
  {label:'College',min:19,max:22,avg:[87,95], good:[96,100],elite:101},
  {label:'Pro',   min:23,max:99, avg:[87,95], good:[93,100],elite:105},
 ];
-function bench(age){age=+age; if(!age) return null; return BENCH.find(b=>age>=b.min&&age<=b.max)||null;}
+/* Age bands are steps: on his 13th birthday "elite" max EV would jump from 73 to 83 overnight. With a
+   birth date the bands are blended by exact age instead — each band is pinned at the middle of its
+   age range and the numbers move smoothly in between. A typed whole age still gets its band as-is. */
+function interpBand(table,age,dec){
+  age=+age; if(!age)return null;
+  if(Number.isInteger(age))return table.find(b=>age>=b.min&&age<=b.max)||null;
+  const T=table.map(b=>({b,m:(b.min+b.max+1)/2})), label='age '+age.toFixed(1);
+  if(age<=T[0].m)return {...T[0].b,label};
+  if(age>=T[T.length-1].m)return {...T[T.length-1].b,label};
+  let i=0; while(T[i+1].m<age)i++;
+  const A=T[i].b, B=T[i+1].b, f=(age-T[i].m)/(T[i+1].m-T[i].m), r=10**dec;
+  const mix=(x,y)=>Array.isArray(x)?x.map((v,j)=>mix(v,y[j])):Math.round((x+(y-x)*f)*r)/r;
+  const out={label}; Object.keys(A).forEach(k=>{if(!['label','min','max'].includes(k))out[k]=mix(A[k],B[k])});
+  return out;
+}
+function bench(age){return interpBand(BENCH,age,0)}
+// exact age from the birth date when there is one, else the typed age
+function ageAt(ds){
+  const p=DB.player;
+  if(p.dob&&SAFE_DATE.test(p.dob)){const b=dateFrom(p.dob), d=ds?dateFrom(ds):new Date(); return Math.max(0,(d-b)/(365.2425*864e5))}
+  return +p.age||null;
+}
+const curAge=()=>ageAt(null);
+const ageYears=()=>{const a=curAge(); return a?Math.floor(a):null};
 // default hard-hit threshold ≈ the "good" floor for that age
 // Default hard-hit bar = the bottom of the age group's typical MAX-EV band: "hit at least as
 // hard as a typical kid's best swing". Editable on the Player tab, like HitTrax's own setting.
-function hardHitDefault(age){const b=bench(age); return b?b.avg[0]:85;}
+function hardHitDefault(age){const b=bench(age); return b?Math.round(b.avg[0]):85;}
 // Catcher pop time to 2B, seconds — LOWER is better. Sources: NextCommit age chart,
 // TopVelocity level averages, Catching-101. Elite = the number scouts start noticing.
 const POPBENCH=[
@@ -587,9 +635,9 @@ const POPBENCH=[
  {label:'College',min:19,max:22,avg:[1.90,2.05],good:1.88,elite:1.80},
  {label:'Pro',   min:23,max:99, avg:[1.90,2.00],good:1.85,elite:1.80},
 ];
-function popBench(age){age=+age; if(!age)return null; return POPBENCH.find(b=>age>=b.min&&age<=b.max)||null;}
+function popBench(age){return interpBand(POPBENCH,age,2)}
 const ON_TARGET_IN=24;   // a throw landing within 2 ft of the bag counts as on target
-function HH(){return +(DB.settings.hardHit||hardHitDefault(DB.player.age));}
+function HH(){return +(DB.settings.hardHit||hardHitDefault(curAge()));}
 /* Bat speed, worked backwards from the collision: exit velo ≈ q·pitch + (1+q)·bat speed
    (Alan Nathan). q is the bat's collision efficiency — about 0.20 for wood and BBCOR, a little
    higher for hot youth barrels. Whatever q is, it is the same from session to session, so the
@@ -601,7 +649,7 @@ const BATBENCH=[
  {label:'13–14',min:13,max:14,lo:46,hi:62},{label:'15–16',min:15,max:16,lo:55,hi:65},
  {label:'17–18',min:17,max:18,lo:60,hi:70},{label:'College',min:19,max:22,lo:65,hi:75},
  {label:'Pro',min:23,max:99,lo:66,hi:78}];
-const batBench=age=>{age=+age; return age?BATBENCH.find(b=>age>=b.min&&age<=b.max)||null:null};
+const batBench=age=>interpBand(BATBENCH,age,0);
 // one estimate per ball; the session figure is the top quarter (squared-up contact — a mishit
 // transfers less, so averaging every ball would understate the swing)
 function batEstimates(balls,q,pitchFallback){
@@ -713,7 +761,7 @@ function flagSuspects(){
   const hit=DB.sessions.filter(s=>kindOf(s)==='hitting'&&dispo(s)!=='out');
   const evs=hit.flatMap(s=>(s.balls||[]).map(b=>num(b.ev)).filter(v=>v>0)).sort((a,b)=>a-b);
   const q=p=>evs[Math.floor(p*(evs.length-1))];
-  const bb=bench(DB.player.age);
+  const bb=bench(curAge());
   let fence=bb?bb.elite+20:125, q3=null;
   if(evs.length>=30){const q1=q(.25); q3=q(.75); fence=Math.min(fence,q3+1.5*(q3-q1)+5)}
   hit.forEach(s=>(s.balls||[]).forEach((b,j)=>{
@@ -834,6 +882,10 @@ function computeFromThrows(T){
   };
 }
 function sessionStats(s){
+  if(STATS&&s&&typeof s==='object'){let v=STATS.get(s); if(v===undefined){v=sessionStatsBuild(s); STATS.set(s,v)} return v}
+  return sessionStatsBuild(s);
+}
+function sessionStatsBuild(s){
   if(kindOf(s)==='games')return computeGame(s.summary||{});
   if(kindOf(s)==='catching'){
     if(s.mode!=='mixed'&&s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
@@ -873,6 +925,9 @@ const is3B=s=>kindOf(s)==='catching'&&/3B/.test(s.type||'');
 const vs2B=list=>list.filter(e=>!e.base3);
 function daySessions(kind,raw){
   kind=kind||VIEWKIND;
+  return memo('ds|'+kind+'|'+(raw?'raw':filtKey(kind)),()=>daySessionsBuild(kind,raw)).slice();
+}
+function daySessionsBuild(kind,raw){
   const by={}, out=[], snaps=[];
   rawSorted(kind,raw).forEach(s=>{
     if(isSnap(s)){if(dispo(s)!=='out')snaps.push(s); return}
@@ -1349,7 +1404,7 @@ function popChart(T){
   const t=cleanThrows(T);
   if(t.length<2)return'';
   const W=700,H=220,P={l:44,r:12,t:14,b:26};
-  const b=popBench(DB.player.age);
+  const b=popBench(curAge());
   const vals=t.map(x=>+x.pop);
   let lo=Math.min(...vals), hi=Math.max(...vals);
   if(b){lo=Math.min(lo,b.elite);hi=Math.max(hi,b.avg[1])}
@@ -1548,7 +1603,7 @@ function runnerTime(x){
   const rt=pop-d;
   return (rt>1.2&&rt<4)?rt:null;
 }
-function basePath(){const a=+DB.player.age; return (a&&a<=12)?70:(a&&a<=14?80:90)}
+function basePath(){const a=ageYears(); return (a&&a<=12)?70:(a&&a<=14?80:90)}
 const THROWVIZ={};
 function throwCard(throws,id){
   const T=(throws||[]).filter(x=>throwClass(x)==='clean'&&num(x.pop)!=null);
@@ -2253,8 +2308,19 @@ function mixBar(s){
 /* ============================== views ============================== */
 const TABS=[['dash','Dashboard'],['log','Log Session'],['trends','Trends'],['sessions','Sessions'],['report','Report'],['data','Player & Data']];
 let TAB='dash', TRENDK='maxEV', DASHSEL=null;
+/* One render asks for the same day-sessions and stats dozens of times (a season of data was ~8,000
+   recomputations per dashboard). Everything below is cached for exactly one render and thrown away
+   after it, so nothing can go stale: a change always comes with a fresh render. Outside a render
+   (the session dialog, the tests) nothing is cached at all. */
+let MEMO=null, STATS=null;
+function memo(key,fn){if(!MEMO)return fn(); if(!MEMO.has(key))MEMO.set(key,fn()); return MEMO.get(key)}
+const filtKey=kind=>seasonFor(kind)+'|'+(feedOf(kind)||'');
 function render(){
   flagSuspects();
+  MEMO=new Map(); STATS=new WeakMap();
+  try{renderView()}finally{MEMO=null; STATS=null}
+}
+function renderView(){
   const showKind=countOf('catching')>0||VIEWKIND==='catching'||DB.sessions.some(s=>kindOf(s)==='games');
   document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
     `<button class="${TAB===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
@@ -2268,7 +2334,7 @@ function render(){
       `</div>`:''}<span class="count">${countOf(VIEWKIND)} ${VIEWKIND==='games'?'entr'+(countOf(VIEWKIND)===1?'y':'ies'):'session'+(countOf(VIEWKIND)===1?'':'s')}</span>${seasonPick}</div>`:'';
   const p=DB.player;
   document.getElementById('who').innerHTML=p.name?
-    `<b>${esc(p.name)}</b>${[p.age?p.age+' yrs':'',p.level].filter(Boolean).map(esc).join(' · ')}`:
+    `<b>${esc(p.name)}</b>${[ageYears()?ageYears()+' yrs':'',p.level].filter(Boolean).map(esc).join(' · ')}`:
     `<span class="chip" style="cursor:pointer" onclick="go('data')">Set up player</span>`;
   document.getElementById('view').innerHTML=({dash:vDash,log:vLog,trends:vTrends,sessions:vSessions,report:vReport,data:vData})[TAB]();
   if(TAB==='log')initLog();
@@ -2339,7 +2405,7 @@ function vDash(){
       <a href="#" onclick="openAccount();return false">Sign in</a> and they'll appear here.</div>`:''}</div></div>`
     + refCard();
   const last=dashPick(), st=sessionStats(last);
-  const b=gm?null:(cat?popBench(DB.player.age):bench(DB.player.age));
+  const b=gm?null:(cat?popBench(curAge()):bench(curAge()));
   const gmLabel=last.snap?`${snapLabel(last).toLowerCase()} (season update)`
     :(num(st.gp)>1?`${st.gp} games this day`:'this game');
   const tiles=KIND[VIEWKIND].core.map(k=>{
@@ -2353,7 +2419,7 @@ function vDash(){
         :(d===undefined?'<span class="flat">too few to compare</span>'
         :(d===null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'))}</div></div>`;
   }).join('');
-  return syncBanner()+backfillBanner()+coachSummaryCard()+`
+  return syncBanner()+backfillBanner()+coachSummaryCard()+plansCard()+`
   <div class="card">
     <div class="row" style="align-items:baseline">
       <div><h2>${gm?(last.snap?'Latest season update':'Latest game'):'Latest session'}${last.solo?' <span class="chip a">separate round</span>'
@@ -2371,12 +2437,13 @@ function vDash(){
   ${gm?seasonCard(S)+cageVsGameCard():''}
   ${(cat||gm)?'':suspectCard()}
   ${(cat||gm)?'':batCard(last)}
-  ${(gm||last.base3)?'':(b?(cat?popBenchCard(st,b):benchCard(st,b)):'')}
+  ${(gm||last.base3)?'':(b?(cat?popBenchCard(st,b):benchCard(st,b,last)):'')}
   ${(cat||gm)?'':gapsCard(last.balls,last)}
   ${(cat||gm)?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${(cat||gm)?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
   ${(cat||gm)?'':thirdsCard(last.balls||[],'on '+last.date)}
   ${(cat||gm)?'':laVeloCard()}
+  ${(cat||gm)?'':fadeCard()}
   ${(cat||gm)?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
   ${gm?'':(cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[]))}
   ${cat?throwBarsCard(last.throws||[]):''}
@@ -2398,7 +2465,7 @@ function vDash(){
 function batCard(last){
   const st=sessionStats(last), v=num(st.batSpeed);
   if(v==null)return'';
-  const b=batBench(DB.player.age), q=last.bq||Q();
+  const b=batBench(curAge()), q=last.bq||Q();
   // compare the rounds of the latest date when they came off different feeds
   const rounds=roundsOfDate(last).filter(r=>dispo(r)!=='out'&&(r.balls||[]).length);
   const rows=rounds.map(r=>{const s=sessionStats(r);
@@ -2480,7 +2547,8 @@ function datedGames(){
   return daySessions('games',true).map(e=>({e,g:sessionStats(e)}))
     .filter(x=>!(x.e.snap&&(num(x.g.gp)||1)>2));
 }
-function armCare(){
+function armCare(){return memo('ac',armCareBuild)}
+function armCareBuild(){
   const throwsOn={}, outsOn={};
   DB.sessions.filter(s=>kindOf(s)==='catching'&&dispo(s)!=='out').forEach(s=>{
     const n=(s.throws||[]).filter(x=>['clean','misfire'].includes(throwClass(x))).length||num((s.summary||{}).throws)||0;
@@ -2508,7 +2576,7 @@ function armCare(){
   // pitching, only if logged
   const pitched=G.filter(x=>num(x.g.np)>0).sort((a,b)=>a.e.date<b.e.date?-1:1);
   let pitch=null;
-  if(pitched.length){const L=pitched[pitched.length-1], np=num(L.g.np), age=DB.player.age;
+  if(pitched.length){const L=pitched[pitched.length-1], np=num(L.g.np), age=Math.floor(ageAt(L.e.date)||12);
     const rest=psRest(age,np), eligible=addDays(L.e.date,rest+1);
     pitch={date:L.e.date,np,rest,eligible,ready:today>=eligible,max:psDaily(age),over:np>psDaily(age)}}
   const both=G.filter(x=>num(x.g.np)>0&&(x.g.outs||0)>0&&x.e.date>=addDays(today,-30)).map(x=>x.e.date);
@@ -2580,8 +2648,22 @@ function popBenchCard(st,b){
       <span><i style="background:rgba(242,177,60,.6)"></i>Average ${b.avg[0].toFixed(2)}–${b.avg[1].toFixed(2)}</span></div>
   </div>`;
 }
-function benchCard(st,b){
-  const v=num(st.maxEV); if(v==null)return'';
+/* The age charts come from tee and front-toss work. Off a 42 mph machine the pitch alone adds about
+   q x 22 = 4-5 mph, so the max is judged at a front-toss pitch: each ball's exit velo moved to a
+   20 mph feed with the same collision model the bat-speed estimate uses. */
+const REF_FEED=20;
+function feedAdjMax(balls,q){
+  let best=null;
+  (balls||[]).forEach(x=>{if(SUS.has(x))return; const ev=num(x.ev), p=num(x.pitch); if(!(ev>0)||p==null||p<0)return;
+    const a=ev-q*(p-REF_FEED); if(!best||a>best.a)best={a,ev,p}});
+  return best;
+}
+function benchCard(st,b,last){
+  const raw=num(st.maxEV); if(raw==null)return'';
+  const adj=last?feedAdjMax(last.balls,(last.parts||[last]).map(x=>x.bq).find(Boolean)||Q()):null;
+  const v=adj?adj.a:raw;
+  const feedNote=adj?(Math.abs(adj.a-adj.ev)>=0.5?`Hardest ball ${adj.ev.toFixed(1)} mph off a ${Math.round(adj.p)} mph pitch ≈ <b>${adj.a.toFixed(1)} mph at front-toss speed</b> (~${REF_FEED} mph), which is what the chart assumes.`:'')
+    :'Pitch speed unknown for this session — a machine feed flatters max exit velo by a few mph.';
   const hi=Math.max(b.elite+6,v+3), lo=Math.max(20,b.avg[0]-12);
   const pct=x=>Math.max(0,Math.min(100,(x-lo)/(hi-lo)*100));
   let tag='Building', cls='r';
@@ -2590,7 +2672,7 @@ function benchCard(st,b){
   else if(v>=b.avg[0]){tag='In the average band';cls='a'}
   return `<div class="card"><div class="row" style="align-items:center">
     <div><h2>Age benchmark <span class="chip">${b.label}</span></h2>
-    <div class="hint">Max exit velo vs. typical ranges for this age (controlled/tee conditions)</div></div>
+    <div class="hint">Max exit velo vs. typical ranges for this age (tee / front-toss conditions)${feedNote?'<br>'+feedNote:''}</div></div>
     <span class="chip ${cls}" style="margin-left:auto">${tag}</span></div>
     <div style="position:relative;height:56px;margin-top:6px">
       <div style="position:absolute;top:18px;left:0;right:0;height:14px;border-radius:99px;background:var(--bg2);border:1px solid var(--line);overflow:hidden">
@@ -2664,7 +2746,8 @@ function rowsOf(kind,s){
   if(kind==='catching')return cleanThrows(s.throws).map(x=>({...x,...tag}));
   return (s.balls||[]).filter(b=>num(b.ev)>0&&!SUS.has(b)).map(b=>({...b,...tag}));
 }
-function visitUnits(kind){
+function visitUnits(kind){return memo('vu|'+kind+'|'+filtKey(kind),()=>visitUnitsBuild(kind)).slice()}
+function visitUnitsBuild(kind){
   return vs2B(sorted(kind)).map(s=>({date:s.date,rows:rowsOf(kind,s)})).filter(u=>u.rows.length);
 }
 function pooledRows(kind){return visitUnits(kind).flatMap(u=>u.rows)}
@@ -2720,7 +2803,8 @@ function compareGames(P,R){
 /* A change is only "real" once it has held for two looks in a row: significant now, and also
    significant (same direction) before the latest visit was added. Re-testing seven measures after
    every session would otherwise turn up a false "improving" every few weeks by chance alone. */
-function movingTests(kind){
+function movingTests(kind){return memo('mv|'+kind+'|'+filtKey(kind),()=>movingTestsBuild(kind))}
+function movingTestsBuild(kind){
   const isG=kind==='games', units=isG?gameUnits():visitUnits(kind);
   const win=isG?gameWindows:(u=>windowsOf(kind,u)), cmp=isG?compareGames:((P,R)=>compareUnits(kind,P,R));
   const W=win(units);
@@ -2755,7 +2839,8 @@ function windowSummary(kind,L){
 }
 const spanOf=L=>{const a=L[0].date, b=L[L.length-1].date; return a===b?a.slice(5):a.slice(5)+' → '+b.slice(5)};
 // one row per metric: start window, now window, change, and whether it holds up
-function progressRows(kind){
+function progressRows(kind){return memo('pr|'+kind+'|'+filtKey(kind),()=>progressRowsBuild(kind))}
+function progressRowsBuild(kind){
   const W=progressWindows(kind); if(!W)return null;
   const a=windowSummary(kind,W.S), b=windowSummary(kind,W.R);
   const rows=KIND[kind].metrics.map(m=>{
@@ -3062,83 +3147,184 @@ function delGoal(id){
   save(); render();
 }
 
-/* ============================== coach's summary ==============================
-   One strength, one thing to work on, one drill — pulled from all three sides of his game and
-   only from evidence the app trusts (changes that cleared the noise, recent windows, benchmarks). */
 // thresholds: 1 K in 9 PA could be a true rate anywhere from 2% to 43%, so game reads wait for ~25 PA
 const GAME_PA=25, GAME_BIP=15, SWEET_LOW=35, GB_HIGH=50;
+/* Does he fade through a round? Each round's balls are split into thirds by order and compared with
+   that round's own average, so the feed and the day cancel out; the rounds are the units of the test
+   (t on rounds - 1), so one tired round can't make the call. */
+function fadeStats(){return memo('fd|'+filtKey('hitting'),fadeStatsBuild)}
+function fadeStatsBuild(){
+  const ok=b=>num(b.ev)>0&&!SUS.has(b);
+  const per=rawSorted('hitting').filter(s=>dispo(s)!=='out'&&(s.balls||[]).filter(ok).length>=15).map(s=>{
+    const ev=s.balls.filter(ok).map(b=>+b.ev), n=ev.length, k=Math.floor(n/3);
+    const m=a=>a.reduce((x,c)=>x+c,0)/a.length, all=m(ev);
+    return {date:s.date,n,first:m(ev.slice(0,k))-all,mid:m(ev.slice(k,n-k))-all,last:m(ev.slice(n-k))-all,drop:m(ev.slice(n-k))-m(ev.slice(0,k))};
+  });
+  if(per.length<4)return {need:4,have:per.length};
+  const mv=meanVar(per.map(r=>r.drop)), se=Math.sqrt(mv.v/mv.n), crit=tCrit(mv.n-1);
+  const avg=k=>per.reduce((a,r)=>a+r[k],0)/per.length;
+  return {per,mean:mv.m,noise:crit*se,sig:se>0&&Math.abs(mv.m)>=crit*se,avgN:Math.round(avg('n')),first:avg('first'),mid:avg('mid'),last:avg('last')};
+}
+function fadeCard(){
+  const F=fadeStats();
+  if(F.need)return'';
+  const bar=(label,v)=>{const w=Math.min(50,Math.abs(v)*8);
+    return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><div style="width:86px" class="hint">${label}</div>
+      <div style="flex:1;position:relative;height:16px;background:var(--bg2);border-radius:6px">
+        <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)"></div>
+        <div style="position:absolute;top:2px;bottom:2px;${v>=0?'left:50%':'right:50%'};width:${w}%;background:${v>=0?'rgba(47,191,113,.7)':'rgba(239,77,90,.7)'};border-radius:4px"></div></div>
+      <div style="width:70px;text-align:right;font-weight:700;font-size:13px">${v>=0?'+':''}${v.toFixed(1)} mph</div></div>`};
+  let read;
+  if(F.sig&&F.mean<=-1.5)read=`<b>He fades:</b> the last third of a round averages ${Math.abs(F.mean).toFixed(1)} mph below the first third, across ${F.per.length} rounds of about ${F.avgN} balls. Shorter rounds — 10 to 12 swings, then a break — keep every swing at full intent.`;
+  else if(F.sig&&F.mean>=1.5)read=`<b>He warms up:</b> the last third of a round is ${F.mean.toFixed(1)} mph harder than the first. The first swings are a warm-up — add dry swings or a few tee swings before the round that counts.`;
+  else read=`No real fade: he holds exit velo through rounds of about ${F.avgN} balls (first-to-last change ${F.mean>=0?'+':''}${F.mean.toFixed(1)} mph, inside the ±${F.noise.toFixed(1)} that round-to-round noise allows).`;
+  return `<div class="card"><h2>Through a round</h2>
+    <div class="hint">Exit velo by where the ball came in the round, against that round's own average — ${F.per.length} rounds of 15+ balls</div>
+    <div style="margin-top:10px">${bar('First third',F.first)}${bar('Middle',F.mid)}${bar('Last third',F.last)}</div>
+    <div class="note${F.sig&&F.mean<=-1.5?' warn':''}" style="margin-top:10px">${read}</div></div>`;
+}
+
+/* ---------- plans: the work-on item becomes a target for the next session, then gets checked ---------- */
+const PLANK=['sweet','gb','ld','hha','avgEV','batSpeed','avgExch','avgVelo','cleanPct','avgPop'];
+let COACHPLAN=null;
+function addPlan(){
+  const p=COACHPLAN; if(!p)return;
+  DB.plans=(DB.plans||[]).concat([{id:uid(),...p,created:localDate(),mtime:Date.now()}]).slice(-30);
+  save(); render();
+}
+function delPlan(id){
+  DB.plans=(DB.plans||[]).filter(x=>x.id!==id); DB.deleted.push({id,ts:Date.now()}); save(); render();
+}
+function planResult(p){
+  const day=daySessions(p.kind,true).find(e=>e.date>p.created&&!e.base3);
+  if(!day)return {wait:true};
+  const st=sessionStats(day), v=num(st[p.metric]), n=sampleN(day,st);
+  if(v==null)return {date:day.date,none:true};
+  if(n<MIN_N[p.kind])return {date:day.date,v,small:n};
+  return {date:day.date,v,hit:p.dir==='down'?v<=p.target:v>=p.target};
+}
+function plansCard(){
+  const list=(DB.plans||[]).slice().sort((a,b)=>(b.mtime||0)-(a.mtime||0)).slice(0,5);
+  if(!list.length)return'';
+  const f=(k,v)=>fmt(k,v)+(MK[k].u==='%'?'%':' '+MK[k].u);
+  const rows=list.map(p=>{const r=planResult(p), m=MK[p.metric];
+    const res=r.wait?`<span class="chip">waiting for the next ${p.kind} session</span>`
+      :r.none?`<span class="chip">${esc(r.date)}: not measured</span>`
+      :r.small!=null?`<span class="chip">${esc(r.date)}: ${f(p.metric,r.v)} on ${r.small} — too few to judge</span>`
+      :`<span class="chip ${r.hit?'g':'a'}">${r.hit?'✓ hit':'✗ not yet'} — ${f(p.metric,r.v)} on ${esc(r.date)}</span>`;
+    return `<div style="padding:9px 0;border-bottom:1px solid rgba(39,57,92,.55)">
+      <div class="row" style="gap:8px;align-items:baseline"><b>${esc(m.n)} ${p.dir==='down'?'≤':'≥'} ${f(p.metric,p.target)}</b>
+        <span class="hint">set ${esc(p.created)}, was ${f(p.metric,p.base)}</span>
+        <button class="btn ghost" style="margin-left:auto;padding:3px 9px;font-size:12px" onclick="delPlan('${esc(p.id)}')">Remove</button></div>
+      <div style="margin-top:5px">${res}</div>
+      ${p.drill?`<div class="hint" style="margin-top:4px">Drill: ${esc(p.drill)}</div>`:''}</div>`}).join('');
+  return `<div class="card"><h2>Session plans</h2>
+    <div class="hint">Each plan is checked against the next session of that kind logged after it was set.</div>${rows}</div>`;
+}
+
+/* ============================== coach's summary ==============================
+   One strength, one thing to work on, one drill — pulled from all three sides of his game and
+   only from evidence the app trusts (changes that cleared the noise, recent windows, benchmarks).
+   Every item carries the date of the data behind it, and a side with nothing in the last four
+   weeks (six for games) is left out rather than read as if it were current. */
+const STALE={hitting:28,catching:28,games:42};
 function coachSummaryCard(){
-  const S=[], F=[], basis=[];
-  const push=(arr,w,src,text,drill)=>arr.push({w,src,text,drill});
+  const S=[], F=[], basis=[], today=localDate();
+  const lastOf=k=>{const L=daySessions(k).slice(-1)[0]; return L?L.date:null};
+  const D={Hitting:lastOf('hitting'),Catching:lastOf('catching'),Games:lastOf('games')};
+  const stale=(k,d)=>d&&d<addDays(today,-STALE[k]);
+  const push=(arr,w,src,text,drill,opt)=>arr.push({w,src,text,drill,asOf:(opt&&opt.asOf)||D[src]||today,plan:opt&&opt.plan});
+  const old=[];
   // --- hitting ---
-  const hitRows=rollRows('hitting');
+  const hitRows=stale('hitting',D.Hitting)?[]:rollRows('hitting');
+  if(stale('hitting',D.Hitting))old.push('hitting');
   if(hitRows.length){
     basis.push(`${hitRows.length} batted balls`);
     const mv=movingTests('hitting');
     (mv.tests||[]).filter(r=>r.confirmed&&moveGood(r)).forEach(r=>push(S,3,'Hitting',`${r.label} up ${Math.abs(r.diff).toFixed(r.pct?0:1)}${r.pct?' pts':' mph'} — beyond the noise.`));
-    (mv.tests||[]).filter(r=>r.confirmed&&!moveGood(r)).forEach(r=>push(F,2.5,'Hitting',`${r.label} slipping (${r.pct?Math.round(r.from)+'% → '+Math.round(r.to)+'%':r.from.toFixed(1)+' → '+r.to.toFixed(1)}).`,'Back to the basics that produced the earlier numbers — short, focused tee rounds before live work.'));
+    (mv.tests||[]).filter(r=>r.confirmed&&!moveGood(r)).forEach(r=>{
+      const k=r.k==='adjEV'?'avgEV':r.k;
+      push(F,2.5,'Hitting',`${r.label} slipping (${r.pct?Math.round(r.from)+'% → '+Math.round(r.to)+'%':r.from.toFixed(1)+' → '+r.to.toFixed(1)}).`,'Back to the basics that produced the earlier numbers — short, focused tee rounds before live work.',
+        {plan:PLANK.includes(k)?{kind:'hitting',metric:k,dir:r.dir==='down'?'down':'up',target:+r.from.toFixed(1),base:+r.to.toFixed(1)}:null})});
     const recent=hitRows.slice(-30), st=computeFromBalls(recent,recent[recent.length-1]._hh)||{};
     if(recent.length>=15){
       // big-league hitters put about a third of their balls in 8–32° and ~43% on the ground — so the
       // flags sit past those marks, not at them (a soft cage feed should if anything beat them)
-      if(num(st.sweet)!=null&&st.sweet<SWEET_LOW)push(F,2,'Hitting',`Only ${Math.round(st.sweet)}% of recent balls are in the 8–32° window — big leaguers manage about a third.`,'Line-drive-only rounds off the tee: score a point only for balls that would clear the infield on a line.');
-      if(num(st.gb)>=GB_HIGH)push(F,2,'Hitting',`${Math.round(st.gb)}% ground balls lately — the barrel is working down.`,'High-tee, top-half-of-the-zone work: drive it, don’t lift it.');
+      if(num(st.sweet)!=null&&st.sweet<SWEET_LOW)push(F,2,'Hitting',`Only ${Math.round(st.sweet)}% of recent balls are in the 8–32° window — big leaguers manage about a third.`,'Line-drive-only rounds off the tee: score a point only for balls that would clear the infield on a line.',
+        {plan:{kind:'hitting',metric:'sweet',dir:'up',target:Math.min(60,Math.round(st.sweet)+10),base:Math.round(st.sweet)}});
+      if(num(st.gb)>=GB_HIGH)push(F,2,'Hitting',`${Math.round(st.gb)}% ground balls lately — the barrel is working down.`,'High-tee, top-half-of-the-zone work: drive it, don’t lift it.',
+        {plan:{kind:'hitting',metric:'gb',dir:'down',target:Math.round(st.gb)-10,base:Math.round(st.gb)}});
     }
     // feed-speed bat drop on the latest hitting date
     const last=sorted('hitting').slice(-1)[0];
     if(last){
       const R=roundsOfDate(last).filter(r=>dispo(r)!=='out').map(r=>({p:num(r.pitch),b:num(sessionStats(r).batSpeed)})).filter(x=>x.p!=null&&x.b!=null);
       if(R.length>=2){const fast=R.reduce((a,c)=>c.p>a.p?c:a), slow=R.reduce((a,c)=>c.p<a.p?c:a);
-        if(fast.p-slow.p>=5&&fast.b-slow.b>=3)push(F,3,'Hitting',`Swings about ${(fast.b-slow.b).toFixed(1)} mph slower on the ${Math.round(slow.p)} mph feed than the ${Math.round(fast.p)} mph one.`,'Alternate slow front toss with machine rounds. On the slow ones, same intent and same speed — count a slowed-down swing as a miss.')}
-      const bat=num(sessionStats(last).batSpeed), bb=batBench(DB.player.age);
+        if(fast.p-slow.p>=5&&fast.b-slow.b>=3)push(F,3,'Hitting',`Swings about ${(fast.b-slow.b).toFixed(1)} mph slower on the ${Math.round(slow.p)} mph feed than the ${Math.round(fast.p)} mph one.`,'Alternate slow front toss with machine rounds. On the slow ones, same intent and same speed — count a slowed-down swing as a miss.',
+          {plan:{kind:'hitting',metric:'batSpeed',dir:'up',target:+(fast.b-1).toFixed(1),base:+sessionStats(last).batSpeed.toFixed(1)}})}
+      const bat=num(sessionStats(last).batSpeed), bb=batBench(curAge());
       if(bat!=null&&bb&&bat>=bb.lo)push(S,1.5,'Hitting',`Bat speed about ${bat.toFixed(0)} mph — inside the ${bb.label} range.`);
     }
+    const FD=fadeStats();
+    if(!FD.need&&FD.sig&&FD.mean<=-2)push(F,2.5,'Hitting',`Fades through a round: the last third is ${Math.abs(FD.mean).toFixed(1)} mph softer than the first.`,'Shorter rounds: 10–12 swings, a break, then go again — every swing at full intent.');
   }
   // --- catching ---
-  const thrRows=rollRows('catching');
+  const thrRows=stale('catching',D.Catching)?[]:rollRows('catching');
+  if(stale('catching',D.Catching))old.push('catching');
   if(thrRows.length){
     basis.push(`${thrRows.length} clean throws`);
     const mv=movingTests('catching');
     (mv.tests||[]).filter(r=>r.confirmed&&moveGood(r)).forEach(r=>push(S,3,'Catching',`${r.label} improved (${r.from.toFixed(2)} → ${r.to.toFixed(2)}) — beyond the noise.`));
-    const st=computeFromThrows(thrRows.slice(-20))||{}, pb=popBench(DB.player.age);
+    const st=computeFromThrows(thrRows.slice(-20))||{}, pb=popBench(curAge());
     const allPop=computeFromThrows(vs2B(sorted('catching')).flatMap(s=>s.throws||[]))||{};
-    if(pb&&num(allPop.bestPop)!=null&&allPop.bestPop<=pb.elite)push(S,2,'Catching',`Best pop ${allPop.bestPop.toFixed(2)}s — elite range for age ${pb.label}.`);
+    if(pb&&num(allPop.bestPop)!=null&&allPop.bestPop<=pb.elite)push(S,2,'Catching',`Best pop ${allPop.bestPop.toFixed(2)}s — elite range for ${/^age/.test(pb.label)?pb.label:"age "+pb.label}.`);
     if(num(st.avgExch)!=null&&st.avgExch<0.8)push(S,2,'Catching',`Quick exchange: ${st.avgExch.toFixed(2)}s average.`);
-    if(num(st.avgExch)>=0.95)push(F,2.5,'Catching',`Exchange is the slow part (${st.avgExch.toFixed(2)}s).`,'Exchange-only reps: receive to release, no throw, timed. Ten clean ones before any throw-downs.');
-    if(num(st.avgExch)!=null&&st.avgExch<0.8&&pb&&num(st.avgPop)>pb.good)push(F,2,'Catching',`Pop time is all ball flight now — the exchange is already quick.`,'Arm strength is the lever: a long-toss progression twice a week, as his arm allows.');
-    if(num(allPop.cleanPct)!=null&&allPop.cleanPct<80)push(F,2,'Catching',`${Math.round(allPop.cleanPct)}% of throw-down reps are clean.`,'Slow it down: ten throw-downs focused only on a clean transfer before adding speed.');
+    if(num(st.avgExch)>=0.95)push(F,2.5,'Catching',`Exchange is the slow part (${st.avgExch.toFixed(2)}s).`,'Exchange-only reps: receive to release, no throw, timed. Ten clean ones before any throw-downs.',
+      {plan:{kind:'catching',metric:'avgExch',dir:'down',target:+(st.avgExch-0.05).toFixed(2),base:+st.avgExch.toFixed(2)}});
+    if(num(st.avgExch)!=null&&st.avgExch<0.8&&pb&&num(st.avgPop)>pb.good)push(F,2,'Catching',`Pop time is all ball flight now — the exchange is already quick.`,'Arm strength is the lever: a long-toss progression twice a week, as his arm allows.',
+      {plan:num(st.avgVelo)!=null?{kind:'catching',metric:'avgVelo',dir:'up',target:+(st.avgVelo+1).toFixed(1),base:+st.avgVelo.toFixed(1)}:null});
+    if(num(allPop.cleanPct)!=null&&allPop.cleanPct<80)push(F,2,'Catching',`${Math.round(allPop.cleanPct)}% of throw-down reps are clean.`,'Slow it down: ten throw-downs focused only on a clean transfer before adding speed.',
+      {plan:{kind:'catching',metric:'cleanPct',dir:'up',target:Math.min(95,Math.round(allPop.cleanPct)+10),base:Math.round(allPop.cleanPct)}});
   }
-  // arm care outranks everything
-  const AC=armCare();
-  if(AC.T.ratio>=1.5)push(F,5,'Catching','Throwing load jumped this week.','Cut the next session’s throws roughly in half and build back up over a week.');
-  if(AC.I.ratio>=1.5&&AC.I.now>=18||AC.heavy)push(F,4.5,'Catching',AC.heavy?`${innStr(AC.heavy.outs)} innings caught in three days.`:`${innStr(AC.I.now)} innings caught this week — well above his normal.`,'Keep the next HitTrax throwing session short and light; no long toss until his arm feels fresh.');
-  if(AC.pitch&&!AC.pitch.ready)push(F,6,'Pitching',`Pitch Smart rest: ${AC.pitch.np} pitches on ${prettyDate(AC.pitch.date)} means no pitching until ${prettyDate(AC.pitch.eligible)}.`,'Rest days are rest from pitching — light catch is fine, max-effort throwing (throw-downs included) is not.');
-  if(AC.both.length)push(F,5.5,'Pitching',`Pitched and caught on the same day (${prettyDate(AC.both[AC.both.length-1])}).`,'Pitch Smart: avoid catching while pitching — pick one position for the day.');
+  // arm care outranks everything — and is always about now
+  const AC=armCare(), now={asOf:today};
+  if(AC.T.ratio>=1.5)push(F,5,'Catching','Throwing load jumped this week.','Cut the next session’s throws roughly in half and build back up over a week.',now);
+  if(AC.I.ratio>=1.5&&AC.I.now>=18||AC.heavy)push(F,4.5,'Catching',AC.heavy?`${innStr(AC.heavy.outs)} innings caught in three days.`:`${innStr(AC.I.now)} innings caught this week — well above his normal.`,'Keep the next HitTrax throwing session short and light; no long toss until his arm feels fresh.',now);
+  if(AC.pitch&&!AC.pitch.ready)push(F,6,'Pitching',`Pitch Smart rest: ${AC.pitch.np} pitches on ${prettyDate(AC.pitch.date)} means no pitching until ${prettyDate(AC.pitch.eligible)}.`,'Rest days are rest from pitching — light catch is fine, max-effort throwing (throw-downs included) is not.',now);
+  if(AC.both.length)push(F,5.5,'Pitching',`Pitched and caught on the same day (${prettyDate(AC.both[AC.both.length-1])}).`,'Pitch Smart: avoid catching while pitching — pick one position for the day.',{asOf:AC.both[AC.both.length-1]});
   // --- games ---
-  const G=sorted('games').map(s=>sessionStats(s));
+  const G=stale('games',D.Games)?[]:sorted('games').map(s=>sessionStats(s));
+  if(stale('games',D.Games))old.push('games');
   if(G.length){
-    const g=sumGames(G); basis.push(`${g.pa||0} game PA`);
+    const g=sumGames(G), gd={asOf:D.Games}; basis.push(`${g.pa||0} game PA`);
     if((g.pa||0)>=GAME_PA&&g.kPct!=null&&g.kPct<=15)push(S,2,'Games',`Puts the ball in play — ${Math.round(g.kPct)}% strikeouts.`);
     if((g.pa||0)>=GAME_PA&&g.bbPct!=null&&g.bbPct>=15)push(S,1.5,'Games',`Patient — walks in ${Math.round(g.bbPct)}% of plate appearances.`);
     // passed balls: the receiving/blocking side HitTrax never sees. Some are on the pitcher (and
     // 12U pitchers are wild), but past ~1.5 a game the catcher's blocks are part of it.
     if((g.outs||0)>=36&&g.pb6!=null&&g.pb6>=1.5)push(F,2.5,'Catching',`${g.pb} passed balls in ${innStr(g.outs)} innings caught — about ${g.pb6.toFixed(1)} per 6-inning game.`,
-      'Blocking, 10 minutes a session: knees down on short-hop flips in the dirt — chest over the ball, glove closing the gap between the knees, ball kept in front. Start slow and straight on, then add angles.');
+      'Blocking, 10 minutes a session: knees down on short-hop flips in the dirt — chest over the ball, glove closing the gap between the knees, ball kept in front. Start slow and straight on, then add angles.',gd);
     if((g.pa||0)>=GAME_PA&&g.kPct!=null&&g.kPct>=30)push(F,2.5,'Games',`Striking out in ${Math.round(g.kPct)}% of plate appearances.`,'Two-strike approach: choke up, widen the stance, protect the plate.');
     if(hitRows.length){
       const c=computeFromBalls(hitRows,HH())||{}, bip=Math.max(0,(g.ab||0)-(g.k||0)-(g.hr||0)+(g.sf||0));
       if(bip>=GAME_BIP&&g.fbPct!=null&&c.fb!=null&&g.fbPct-c.fb>=20)push(F,3,'Games',`Gets under it in games: ${Math.round(g.fbPct)}% fly balls vs ${Math.round(c.fb)}% in the cage.`,'Game-speed machine rounds scored line-drive only — the soft feed in the cage isn’t testing the swing he needs.');
     }
   }
-  if(!S.length&&!F.length)return'';
+  if(!S.length&&!F.length)return old.length?`<div class="card"><h2>Coach's read</h2><div class="hint">Nothing recent to read — the latest ${old.join(' and ')} data is more than a few weeks old. Log a session and this fills back in.</div></div>`:'';
   S.sort((a,b)=>b.w-a.w); F.sort((a,b)=>b.w-a.w);
   const s=S[0], f=F[0];
+  COACHPLAN=f&&f.plan?{...f.plan,text:f.text.replace(/<[^>]*>/g,''),drill:f.drill||''}:null;
+  const open=f&&f.plan&&(DB.plans||[]).some(p=>p.kind===f.plan.kind&&p.metric===f.plan.metric&&planResult(p).wait);
+  const when=x=>x.asOf&&x.asOf<addDays(today,-3)?`<div class="hint" style="margin-top:4px;font-size:11.5px">as of ${prettyDate(x.asOf)}</div>`:'';
   const tile=(label,cls,x)=>x?`<div class="tile" style="flex:1 1 240px"><div class="k">${label} <span class="chip ${cls}" style="font-size:9px">${esc(x.src)}</span></div>
-    <div style="font-size:15px;font-weight:700;margin-top:6px;line-height:1.35">${x.text}</div></div>`:'';
+    <div style="font-size:15px;font-weight:700;margin-top:6px;line-height:1.35">${x.text}</div>${when(x)}</div>`:'';
+  const pm=COACHPLAN&&MK[COACHPLAN.metric], pf=v=>fmt(COACHPLAN.metric,v)+(pm.u==='%'?'%':' '+pm.u);
   return `<div class="card" style="border-color:rgba(250,70,22,.45)"><h2>Coach's read</h2>
-    <div class="hint">One thing going well, one thing to work on — only from evidence that holds up (${esc(basis.join(' · '))})</div>
+    <div class="hint">One thing going well, one thing to work on — only from evidence that holds up (${esc(basis.join(' · ')||'recent data')})${old.length?` · ${old.join(' and ')} data is over a few weeks old, so it's left out`:''}</div>
     <div class="row" style="margin-top:10px;gap:10px">${tile('Going well','g',s)}${tile('Work on','a',f)}</div>
     ${f&&f.drill?`<div class="note" style="margin-top:10px"><b>Drill:</b> ${f.drill}</div>`:''}
+    ${COACHPLAN&&!open?`<div class="row" style="margin-top:10px;align-items:center;gap:10px">
+      <button class="btn sec" style="padding:6px 12px;font-size:13px" onclick="addPlan()">Make it the plan: ${esc(pm.n)} ${COACHPLAN.dir==='down'?'≤':'≥'} ${pf(COACHPLAN.target)} next ${COACHPLAN.kind} session</button>
+      <span class="hint">checked automatically when the next one is logged</span></div>`:''}
   </div>`;
 }
 
@@ -3333,11 +3519,11 @@ function groupByDate(){
 // the export names the player and level — fill a blank profile rather than make them retype it
 function prefillPlayer(rows){
   const r=rows.find(x=>x.user)||{};
-  if(r.user&&!DB.player.name){DB.player.name=(''+r.user).trim(); save()}
+  if(r.user&&!DB.player.name){DB.player.name=(''+r.user).trim(); DB.playerAt=Date.now(); save()}
   const lv=(rows.find(x=>x.level)||{}).level;
-  if(lv&&!DB.player.level){DB.player.level=(''+lv).trim(); save()}
+  if(lv&&!DB.player.level){DB.player.level=(''+lv).trim(); DB.playerAt=Date.now(); save()}
   // "Baseball - 12U" -> age 12 (top of the bracket; editable on the Player tab)
-  if(lv&&!DB.player.age){const m=(''+lv).match(/(\d{1,2})\s*U/i); if(m){DB.player.age=String(+m[1]); save()}}
+  if(lv&&!DB.player.age){const m=(''+lv).match(/(\d{1,2})\s*U/i); if(m){DB.player.age=String(+m[1]); DB.playerAt=Date.now(); save()}}
 }
 function doParseThrows(txt){
   const r=parseThrows(txt);
@@ -3395,13 +3581,47 @@ function findSameRound(kind,date,rows){
 }
 /* ---------- stored source files + backfill ---------- */
 const MAXFILE=1200000;                       // ~1.2 MB of CSV is already a huge session
+/* Stored CSVs are LZW-compressed: a season of raw files would otherwise fill most of the browser's
+   ~5 MB and be re-uploaded on every edit. Codes are written as UTF-16 units kept below the surrogate
+   range (0xD800), so the text stays valid UTF-8 for the cloud. Characters above 255 are escaped.
+   The leading tag marks compressed text, so an older copy of the app can't mistake it for a CSV. */
+const LZTAG='§LZW1§', LZ_OFF=0x20, LZ_MAX=0xD7FF-LZ_OFF, LZ_ESC=256, LZ_FIRST=257;
+function lzwPack(str){
+  const D=new Map(), out=[]; let next=LZ_FIRST, w='';
+  const emit=c=>out.push(String.fromCharCode(c+LZ_OFF)), code=x=>x.length===1?x.charCodeAt(0):D.get(x);
+  for(let i=0;i<str.length;i++){
+    const ch=str[i], cc=str.charCodeAt(i);
+    if(cc>255){if(w){emit(code(w)); w=''} emit(LZ_ESC); emit(cc>>8); emit(cc&255); continue}
+    const wc=w+ch;
+    if(wc.length===1||D.has(wc)){w=wc; continue}
+    emit(code(w)); if(next<=LZ_MAX)D.set(wc,next++); w=ch;
+  }
+  if(w)emit(code(w));
+  return out.join('');
+}
+function lzwUnpack(z){
+  const D=[], out=[]; let next=LZ_FIRST, prev=null;
+  for(let i=0;i<z.length;i++){
+    const c=z.charCodeAt(i)-LZ_OFF;
+    if(c===LZ_ESC){const hi=z.charCodeAt(++i)-LZ_OFF, lo=z.charCodeAt(++i)-LZ_OFF; out.push(String.fromCharCode(hi*256+lo)); prev=null; continue}
+    let e;
+    if(c<256)e=String.fromCharCode(c); else if(D[c]!==undefined)e=D[c]; else if(c===next&&prev!=null)e=prev+prev[0]; else throw new Error('corrupt');
+    out.push(e);
+    if(prev!=null&&next<=LZ_MAX)D[next++]=prev+e[0];
+    prev=e;
+  }
+  return out.join('');
+}
+const packText=t=>LZTAG+lzwPack(t);
+function fileText(f){const t=(f&&f.text)||''; if(!t.startsWith(LZTAG))return t; try{return lzwUnpack(t.slice(LZTAG.length))}catch(e){return ''}}
 function storeFile(name,text){
   if(!text||text.length>MAXFILE)return null;
   const id=uid();
   DB.files=DB.files||{};
-  DB.files[id]={name:name||'pasted rows',text,ts:Date.now()};
+  DB.files[id]={name:name||'pasted rows',text:packText(text),ts:Date.now()};
   return id;
 }
+function packFiles(){let n=0; Object.values(DB.files||{}).forEach(f=>{if(f.text&&!f.text.startsWith(LZTAG)){f.text=packText(f.text); n++}}); return n}
 function fileBytes(){return Object.values(DB.files||{}).reduce((a,f)=>a+(f.text||'').length,0)}
 function pruneFiles(){                       // drop files no session points at any more
   const used=new Set(DB.sessions.map(s=>s.src&&s.src.f).filter(Boolean));
@@ -3411,7 +3631,8 @@ function pruneFiles(){                       // drop files no session points at 
 function backfillSession(s){
   const f=s.src&&DB.files&&DB.files[s.src.f]; if(!f)return false;
   const cat=kindOf(s)==='catching';
-  const r=cat?parseThrows(f.text):parsePaste(f.text);
+  const txt=fileText(f); if(!txt)return false;
+  const r=cat?parseThrows(txt):parsePaste(txt);
   let rows=cat?r.throws:r.balls;
   if(!rows.length)return false;
   if(r.dates.length>1&&s.src.date)rows=rows.filter(x=>x.date===s.src.date);
@@ -3520,7 +3741,7 @@ function vTrends(){
   if(!avail.length)return `<div style="margin-top:14px">${trendModeBar()}</div>${feedBar()}<div class="card"><div class="empty">${feedOf(VIEWKIND)?'No sessions of this type in the selected season.':'Log a session first.'}</div></div>`;
   if(!avail.find(m=>m.k===TRENDK))TRENDK=avail[0].k;
   const S=series(TRENDK);
-  const b=bench(DB.player.age), pb=popBench(DB.player.age);
+  const b=bench(curAge()), pb=popBench(curAge());
   let band=MK[TRENDK].dir==='win'?MK[TRENDK].win:null;
   if(TRENDK==='maxEV'&&b)band=[b.good[0],b.good[1]];
   if((TRENDK==='avgPop'||TRENDK==='bestPop')&&pb)band=[pb.elite,pb.good];
@@ -3760,7 +3981,7 @@ function vReport(){
   const S=sorted();
   if(S.length<2)return feedBar()+'<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
   const from=S[0].date,to=S[S.length-1].date, cat=VIEWKIND==='catching';
-  const b=cat?popBench(DB.player.age):bench(DB.player.age);
+  const b=cat?popBench(curAge()):bench(curAge());
   // the first visits against the latest, pooled and tested — what a coach should read, not two single days
   const PR=progressRows(VIEWKIND);
   const rows=PR?PR.rows.map(r=>{const bs=best(r.m.k);
@@ -3777,7 +3998,7 @@ function vReport(){
     <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
       <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
     <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — HitTrax ${cat?'catching':'hitting'} progress report</h2>
-    <div class="hint">${scope?scope+' · ':''}${from} → ${to} · ${S.length} sessions${DB.player.age?' · age '+esc(DB.player.age):''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
+    <div class="hint">${scope?scope+' · ':''}${from} → ${to} · ${S.length} sessions${ageYears()?' · age '+ageYears():''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
     ${PR?`<div class="hint" style="margin-top:8px">${esc(PR.label)}. "Real" means the change holds up comparing visit against visit,
       so one good day can't make it; maxes are single balls and top-quarter averages have no clean error bar, so neither is tested.</div>`:''}
     <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Metric</th><th>Start</th><th>Now</th><th>Change</th><th>Read</th><th>Best</th></tr></thead>
@@ -3825,10 +4046,11 @@ function copyReport(){
 /* ---------- player & data ---------- */
 function vData(){
   const p=DB.player;
-  return `<div class="card"><h2>Player</h2><div class="hint">Age sets the benchmark band and the default hard-hit threshold.</div>
+  return `<div class="card"><h2>Player</h2><div class="hint">Age sets the benchmark band and the default hard-hit threshold. With a birth date the benchmarks blend by exact age, so they don't jump on his birthday.</div>
    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
      <div><label>Name</label><input id="p_name" value="${esc(p.name||'')}"></div>
-     <div><label>Age</label><input id="p_age" type="number" value="${esc(p.age||'')}"></div>
+     <div><label>Birth date</label><input id="p_dob" type="date" value="${esc(p.dob||'')}" title="Optional — age benchmarks then move with him month by month"></div>
+     <div><label>Age${p.dob?' (from birth date)':''}</label><input id="p_age" type="number" value="${esc(p.dob?String(ageYears()||''):(p.age||''))}"${p.dob?' disabled':''}></div>
      <div><label>Level / team</label><input id="p_level" value="${esc(p.level||'')}" placeholder="e.g. 12U travel"></div>
      <div><label>Bats</label><select id="p_bats"><option ${p.bats==='R'?'selected':''}>R</option><option ${p.bats==='L'?'selected':''}>L</option><option ${p.bats==='S'?'selected':''}>S</option></select></div>
      <div><label>Hard-hit threshold (mph)</label><input id="p_hh" type="number" value="${esc(DB.settings.hardHit||'')}" placeholder="auto: ${hardHitDefault(p.age)}"></div>
@@ -3901,7 +4123,10 @@ function dropFiles(){
 function savePlayer(){
   const g=id=>document.getElementById(id).value.trim();
   const before=HH();
-  DB.player={name:g('p_name'),age:g('p_age'),level:g('p_level'),bats:document.getElementById('p_bats').value};
+  const dob=SAFE_DATE.test(g('p_dob'))?g('p_dob'):'';
+  DB.player={name:g('p_name'),age:g('p_age'),dob,level:g('p_level'),bats:document.getElementById('p_bats').value};
+  if(dob)DB.player.age=String(ageYears()||'');                 // kept in step as a fallback
+  DB.playerAt=DB.settingsAt=Date.now();
   const hh=num(g('p_hh')); DB.settings.hardHit=hh||null;
   const zc=document.getElementById('p_zcal'); if(zc)DB.settings.zoneCal=zc.value;
   const qBefore=Q(); const bqEl=document.getElementById('p_batq'); if(bqEl)DB.settings.batQ=+bqEl.value;
@@ -3970,6 +4195,8 @@ readSession();
 // a device that already knows its borrowed sign-in died should still say so, not just "local"
 if(!session)try{EXPIRED=!!localStorage.getItem(DEADTOK)}catch(e){}
 DB=load();
+// raw files stored before compression: pack them once
+if(packFiles()){DB.updatedAt=Date.now(); saveLocal(); setTimeout(queuePush,1500)}
 // sessions from before thresholds were frozen: pin them at today's threshold, so the next age
 // change can't silently rewrite their hard-hit numbers
 (function(){let n=0; DB.sessions.forEach(s=>{if(kindOf(s)!=='hitting')return;

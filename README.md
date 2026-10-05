@@ -191,6 +191,46 @@ count is logged, the card applies **Pitch Smart** (MLB / USA Baseball): daily ma
 51-65 -> 3, 66+ -> 4) with the date he can pitch again, and a warning when he pitched and caught on the
 same day. A pitch-rest or same-day flag tops the Coach's read. If he never pitches, none of it shows.
 
+## Benchmarks by exact age
+Add a birth date on the Player tab and the age charts (max exit velo, pop time, bat speed) blend by
+exact age instead of stepping at birthdays: each band is pinned at the middle of its age range and the
+numbers move smoothly between bands (at 13.25 "elite" max EV is 78 mph, halfway from the 12 band's 73 to
+the 13-14 band's 83). The displayed age, the default hard-hit line for new sessions and Pitch Smart all
+follow the birth date. A typed whole age without a birth date gets its band exactly as before.
+
+The **max exit velo rating is judged at front-toss speed**: the age charts come from tee and front-toss
+work, and a 42 mph machine adds about 0.2 x 22 = 4-5 mph on its own, so each ball is moved to a 20 mph
+pitch with the same collision model as the bat-speed estimate and the card says what it did.
+
+## Through a round
+Splits each round of 15+ balls into thirds by order and compares each third with that round's own
+average, so the feed and the day cancel. With four or more rounds it tests the first-to-last change
+across rounds (rounds are the unit): **He fades** (shorter rounds, 10-12 swings then a break), **He
+warms up**, or no real fade. A real fade of 2+ mph also reaches the Coach's read.
+
+## Session plans
+When the Coach's read's work-on item is measurable in the cage (sweet-spot %, ground-ball %, bat speed,
+exchange, arm strength, clean-rep % ...), a **Make it the plan** button turns it into a target for the
+next session of that kind, e.g. "Sweet-spot % >= 40% next hitting session". The next session logged after
+the plan was set is checked automatically: hit, not yet, or too few balls to judge. Plans sync, and a
+removed plan stays removed.
+
+## Freshness
+Every Coach's read item carries the date of the data behind it ("as of Wed, Sep 30" once it's more than
+three days old), and a side with nothing in the last four weeks (six for games) is left out rather than
+read as current. Arm-care and Pitch Smart items are always about today.
+
+## Speed, storage, sync
+- **Speed:** each render caches day-sessions and stats for that render only (a season was ~8,000
+  recomputations per dashboard), so nothing can go stale: on a 240-round season the dashboard went from
+  ~460 ms to ~45 ms. A regression check confirms cached and uncached pages are byte-for-byte identical.
+- **Storage:** stored CSVs are LZW-compressed (to well under a quarter of their size on season-sized
+  exports), written as UTF-16 units below the surrogate range so the cloud copy stays valid UTF-8, and
+  tagged so an older copy of the app can't mistake them for a CSV. Existing files are packed once on load.
+- **Sync:** player details and settings carry their own edit time, so a phone saving a session offline
+  can't put back a setting changed on the laptop; and every upload first reads and merges the cloud copy,
+  so it can't drop a session another device uploaded in between.
+
 ## Throws to third
 HitTrax's catching export doesn't say which base, so the session type does. Rounds typed
 *Throw-downs to 3B* stay their own entry (even on a day with 2B rounds) and are kept out of 2B pop-time
@@ -377,7 +417,7 @@ python -m http.server 8776 --directory "C:/Users/user/Documents/HitTrax"
 
 ## Regression tests
 Open `tests.html` (locally at http://localhost:8776/tests.html, or `/hittrax/tests.html` on the live site) — the tab
-title reads `✓ 135/135` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
+title reads `✓ 171/171` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
 key (`hittrax.test.v1`), never signs in, never syncs and ignores `#add=` links, and it deletes that key when done, so
 it's safe on a device holding real data. The fixtures are synthetic but use HitTrax's exact export headers; every
 expected number is worked out by hand in the comments. Covers the parsers (dates, decimal commas, scorebook results,

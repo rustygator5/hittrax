@@ -319,6 +319,100 @@ function tests(){
   eq('Arm care','a multi-game season update isn’t dated — its innings are left out of the weeks',run(`__ac.skipped`),43);
   check('Arm care','…and nothing is counted this week',run(`__ac.weeks[5].outs===0`));
 
+  // benchmarks by exact age
+  eq('Benchmarks','a typed age of 12 gets the 12 band as before',run(`bench(12).elite`),73);
+  eq('Benchmarks','12.5 — the middle of the 12 band — is the band itself',run(`bench(12.5).elite`),73);
+  /* 13.25 sits halfway between the 12 band's middle (12.5) and the 13–14 band's (14.0):
+     elite (73+83)/2 = 78; average band (55+62)/2, (65+75)/2 = 58.5→59, 70 */
+  eq('Benchmarks','13.25 is halfway to the 13–14 band — no birthday jump',run(`bench(13.25).elite`),78);
+  eq('Benchmarks','…the average band blends too',run(`bench(13.25).avg`),[59,70]);
+  eq('Benchmarks','pop-time "good" blends the same way (2.20 → 2.00)',run(`popBench(13.25).good`),2.1);
+  fresh();
+  run(`DB.player.dob='2014-04-05';`);
+  eq('Benchmarks','age from a birth date',run(`+ageAt('2026-10-05').toFixed(2)`),12.5);
+  eq('Benchmarks','whole years for display',run(`Math.floor(ageAt('2026-10-05'))`),12);
+  run(`DB.player.dob='';`);
+  /* 62.4 off a 42 mph pitch, q 0.2: 62.4 − 0.2 × (42 − 20) = 58.0; a tee ball (0 mph) at 50 → 54.0 */
+  eq('Benchmarks','max exit velo judged at front-toss speed',run(`feedAdjMax([{ev:62.4,pitch:42},{ev:50,pitch:0}],0.2).a`),58,1e-9);
+  eq('Benchmarks','a tee ball is credited the feed it didn’t get',run(`feedAdjMax([{ev:50,pitch:0}],0.2).a`),54,1e-9);
+  check('Benchmarks','birth date survives the sanitizer, junk doesn’t',
+    run(`sanitizeDoc({player:{dob:'2014-04-05'}}).player.dob==='2014-04-05'&&sanitizeDoc({player:{dob:'<x>'}}).player.dob===''`));
+
+  // fade through a round
+  /* 5 rounds of 18: first 6 at 60, middle 6 at 56, last 6 at 50 + 0.4r -> drops -10, -9.6 … -8.4,
+     mean -9.2 (sd 0.63, se 0.28, t4 2.78 -> need 0.79): a real fade */
+  fresh();
+  run(`__d=k=>addDays(localDate(),-k);
+     DB.sessions=[0,1,2,3,4].map(r=>({id:'f'+r,kind:'hitting',date:__d(10-r),mode:'detail',mtime:r,hh:55,bq:0.2,summary:{},
+       balls:Array.from({length:18},(_,j)=>({ev:j<6?60:(j<12?56:50+0.4*r),la:15,pitch:30}))}));
+     __fd=fadeStats();`);
+  check('Fade','five rounds that drop 9 mph: a real fade',run(`__fd.sig`));
+  eq('Fade','mean first-to-last drop',run(`__fd.mean`),-9.2,1e-9);
+  check('Fade','the card says so',/He fades/.test(run(`fadeCard()`)));
+  check('Fade','…and so does the Coach’s read',/Fades through a round/.test(run(`coachSummaryCard()`)));
+  run(`DB.sessions=DB.sessions.slice(0,3);`);
+  check('Fade','three rounds is too few to say',run(`fadeStats().need===4`));
+
+  // plans: a work-on item becomes a target, then gets checked against the next session
+  fresh();
+  run(`DB.sessions=[{id:'p1',kind:'hitting',date:__d(2),mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},
+       balls:Array.from({length:20},(_,j)=>({ev:50,la:j<4?15:40,pitch:30}))}];
+     coachSummaryCard();`);
+  /* 4 of 20 in 8–32° = 20% -> plan: sweet-spot ≥ 30% next session */
+  eq('Plans','the work-on item offers a plan',run(`COACHPLAN&&[COACHPLAN.metric,COACHPLAN.dir,COACHPLAN.target,COACHPLAN.base].join('|')`),'sweet|up|30|20');
+  run(`addPlan();`);
+  check('Plans','saved, and waiting for the next session',run(`DB.plans.length===1&&planResult(DB.plans[0]).wait`));
+  run(`DB.sessions.push({id:'p2',kind:'hitting',date:addDays(localDate(),1),mode:'detail',mtime:2,hh:55,bq:0.2,summary:{},
+       balls:Array.from({length:20},(_,j)=>({ev:50,la:j<8?15:40,pitch:30}))});`);
+  /* next session 8 of 20 = 40% ≥ 30% */
+  check('Plans','checked against the next session: 40% ≥ 30% is a hit',run(`(r=>r.hit&&r.v===40)(planResult(DB.plans[0]))`));
+  run(`DB.sessions[1].balls=DB.sessions[1].balls.slice(0,5);`);
+  check('Plans','a 5-ball session is too few to judge',run(`planResult(DB.plans[0]).small===5`));
+  check('Plans','plans survive the sanitizer',run(`sanitizeDoc(DB).plans.length===1`));
+  run(`delPlan(DB.plans[0].id);`);
+  check('Plans','a removed plan stays removed through a sync merge',
+    run(`mergeDocs(DB,{...blank(),plans:[{id:DB.deleted[DB.deleted.length-1].id,kind:'hitting',metric:'sweet',dir:'up',target:30,created:localDate(),mtime:1}]}).plans.length===0`));
+
+  // stale data isn't read as current
+  fresh();
+  run(`DB.sessions=[{id:'o1',kind:'hitting',date:__d(60),mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},
+       balls:Array.from({length:20},()=>({ev:50,la:40,pitch:30}))}];`);
+  const staleRead=run(`coachSummaryCard()`);
+  check('Staleness','two-month-old hitting isn’t read as current',!/8–32° window/.test(staleRead)&&/more than a few weeks old/.test(staleRead));
+
+  // stored files are compressed
+  W.__fx=HIT_CSV; W.__fy=CATCH_CSV;
+  eq('Storage','a hitting export round-trips exactly',run(`lzwUnpack(lzwPack(__fx))===__fx`),true);
+  eq('Storage','a catching export round-trips exactly',run(`lzwUnpack(lzwPack(__fy))===__fy`),true);
+  eq('Storage','accents, symbols and emoji survive',run(`(t=>lzwUnpack(lzwPack(t))===t)('Bats · 12U — 20° ñ 😀 end')`),true);
+  /* 300k pseudo-random characters fill the dictionary (≈55k entries) and keep going */
+  eq('Storage','past a full dictionary it still round-trips',
+    run(`(()=>{let x=7,t='';for(let i=0;i<300000;i++){x=(x*16807)%2147483647;t+='abcdefghijklmnopqrstuvwxyz0123456789,.-'[x%39]}return lzwUnpack(lzwPack(t))===t})()`),true);
+  check('Storage','never writes a surrogate code unit (keeps the cloud copy valid UTF-8)',
+    run(`(z=>![...z].some(c=>{const k=c.charCodeAt(0);return k>=0xD800&&k<=0xDFFF}))(lzwPack(__fx.repeat(40)+'😀'))`));
+  /* a season-like file: the same 33-column rows over and over compress hard */
+  check('Storage','a season-sized export shrinks to under a quarter',run(`lzwPack(__fx.repeat(50)).length<__fx.repeat(50).length/4`));
+  fresh();
+  run(`__fid=storeFile('t.csv',__fx); DB.sessions=[{id:'b1',kind:'hitting',date:'2026-10-04',mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},balls:[],src:{f:__fid,date:null}}];`);
+  check('Storage','stored files are kept compressed',run(`DB.files[__fid].text.startsWith(LZTAG)`));
+  eq('Storage','re-reading a compressed file still finds every ball',run(`(backfillSession(DB.sessions[0]),DB.sessions[0].balls.length)`),7);
+  run(`DB.files.old={name:'old.csv',text:__fx,ts:1};`);
+  check('Storage','files stored before compression are packed once',run(`packFiles()===1&&fileText(DB.files.old)===__fx`));
+
+  // sync: settings follow their own edit time
+  run(`__A={...blank(),settings:{zoneCal:'left'},settingsAt:200,player:{name:'Shane',age:'12',level:'',bats:'R'},playerAt:200,updatedAt:100};
+       __B={...blank(),settings:{},settingsAt:100,player:{name:'',age:'',level:'',bats:'R'},playerAt:50,updatedAt:300};`);
+  eq('Sync','a newer save elsewhere doesn’t undo a newer settings edit',run(`mergeDocs(__A,__B).settings.zoneCal`),'left');
+  eq('Sync','…same for the player',run(`mergeDocs(__B,__A).player.name`),'Shane');
+  eq('Sync','docs without edit stamps fall back to the newest save',
+    run(`mergeDocs({...blank(),settings:{zoneCal:'left'},updatedAt:100},{...blank(),settings:{zoneCal:'right'},updatedAt:300}).settings.zoneCal`),'right');
+
+  // the render cache changes nothing
+  fresh();
+  run(`DB.sessions=[0,1,2,3,4,5].map(r=>({id:'r'+r,kind:'hitting',date:addDays(localDate(),-12+2*r),type:r%2?'Machine':'Front toss',mode:'detail',mtime:r,hh:55,bq:0.2,summary:{},
+       balls:Array.from({length:20},(_,j)=>({ev:45+r+(j%5),la:-5+j*2,pitch:r%2?42:22,horiz:-30+j*3,zone:1+j%13,result:['out','single','double','foul'][j%4]}))}));`);
+  check('Speed','cached and uncached renders are identical',run(`(()=>{const out=[];for(const t of ['dash','trends','report']){TAB=t;render();const a=document.getElementById('view').innerHTML;flagSuspects();renderView();out.push(a===document.getElementById('view').innerHTML)}TAB='dash';return out.every(Boolean)})()`));
+
   // dates
   eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
   check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));
@@ -335,10 +429,25 @@ function report(){
   });
   document.getElementById('out').innerHTML=html;
 }
-document.getElementById('app').addEventListener('load',()=>{
+/* uploads merge with the cloud copy first — exercised against a fake server inside the test frame */
+async function asyncTests(){
+  run(`DB=blank(); DB.sessions=[{id:'local1',kind:'hitting',date:'2026-10-04',mode:'summary',mtime:5,summary:{maxEV:60}}];
+    __posted=null; __realFetch=fetch;
+    fetch=async(url,opt)=>{
+      if(!opt||!opt.method||opt.method==='GET')return {ok:true,status:200,json:async()=>[{updated_at:new Date().toISOString(),
+        data:{...blank(),sessions:[{id:'cloud1',kind:'hitting',date:'2026-10-03',mode:'summary',mtime:3,summary:{maxEV:58}}]}}]};
+      __posted=JSON.parse(opt.body); return {ok:true,status:201,json:async()=>({})}};
+    session={access_token:'test',refresh_token:'test',user:{id:'test-user'}};`);
+  try{
+    await W.eval(`cloudSave()`);
+    eq('Sync','an upload keeps what another device uploaded first',run(`__posted&&__posted.data.sessions.map(s=>s.id).sort().join(',')`),'cloud1,local1');
+  }finally{run(`fetch=__realFetch; session=null; clearInterval(pollTimer); clearTimeout(pushTimer); setSync('local');`)}
+}
+document.getElementById('app').addEventListener('load',async()=>{
   W=document.getElementById('app').contentWindow;
   try{tests()}catch(e){check('Harness','suite crashed',false,e.message)}
-  try{run(`localStorage.removeItem(KEY)`)}catch(e){}          // leave nothing behind
+  try{await asyncTests()}catch(e){check('Harness','async checks crashed',false,e.message)}
+  try{run(`Object.keys(localStorage).filter(k=>k.startsWith(KEY)).forEach(k=>localStorage.removeItem(k))`)}catch(e){}   // leave nothing behind (test keys only)
   report();
 });
 document.getElementById('app').src='index.html?test=1&v='+Date.now();   // never test a cached copy
