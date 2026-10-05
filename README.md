@@ -163,6 +163,34 @@ That matters more than usual here: the app shares an origin with the hub and the
 - **Spreads** - launch-angle spread and exchange spread track how repeatable the swing path and the
   exchange are, not just their averages.
 
+## Seasons
+Seasons follow the youth calendar: spring Jan-May, summer Jun-Jul, fall Aug-Dec ("Fall 2026"). A
+season picker sits in the bar at the top. Games always open on the latest season - GameChanger's
+season lines restart, so each season is its own snapshot timeline (a spring update starts from zero,
+never "spring minus fall"); "All time" adds the seasons together. The cage defaults to all time,
+since swing development carries across the winter, but can be narrowed to one season. Cage vs game
+compares the cage and the games from the same season. The choice is remembered on each device.
+
+## Pitch-type filter
+Trends (both views) and the Report have a **Pitch type** row - All / Front toss / Machine / Live BP
+/ ... - built from the session types you've used. Choosing one reads progress within that type only,
+at the round level (a machine round on a mixed day stays in; the front-toss round doesn't). The
+dashboard and the Coach's read always see everything.
+
+## Arm care
+The arm-care card (catching and games dashboards) shows, per Monday-Sunday week, HitTrax throw-downs
+(max-effort throws) and **innings caught in games**. Each is compared with his own average over the
+four weeks before; a jump of 1.5x or more is flagged. Any three days with 12+ innings caught in the
+last two weeks is flagged as a heavy stretch (there's no official limit for catchers - this is load
+management, not a rule). A multi-game GameChanger season update has no per-game dates, so its innings
+are left out of the weeks and the card says how many.
+
+**Pitching is opt-in.** The game form has an optional Pitching section (IP, pitches). Once a pitch
+count is logged, the card applies **Pitch Smart** (MLB / USA Baseball): daily maximum by age (85 at
+11-12, 95 at 13-14), required rest by pitch count (ages 14 and under: 21-35 -> 1 day, 36-50 -> 2,
+51-65 -> 3, 66+ -> 4) with the date he can pitch again, and a warning when he pitched and caught on the
+same day. A pitch-rest or same-day flag tops the Coach's read. If he never pitches, none of it shows.
+
 ## Throws to third
 HitTrax's catching export doesn't say which base, so the session type does. Rounds typed
 *Throw-downs to 3B* stay their own entry (even on a day with 2B rounds) and are kept out of 2B pop-time
@@ -349,7 +377,7 @@ python -m http.server 8776 --directory "C:/Users/user/Documents/HitTrax"
 
 ## Regression tests
 Open `tests.html` (locally at http://localhost:8776/tests.html, or `/hittrax/tests.html` on the live site) — the tab
-title reads `✓ 113/113` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
+title reads `✓ 135/135` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
 key (`hittrax.test.v1`), never signs in, never syncs and ignores `#add=` links, and it deletes that key when done, so
 it's safe on a device holding real data. The fixtures are synthetic but use HitTrax's exact export headers; every
 expected number is worked out by hand in the comments. Covers the parsers (dates, decimal commas, scorebook results,

@@ -110,6 +110,7 @@ select.inline.sm{font-size:12.5px}
   letter-spacing:.06em;color:var(--dim2);font-weight:700}
 .kindbar .seg{padding:2px}
 .kindbar .seg button{padding:5px 11px;font-size:12.5px}
+.kindbar{flex-wrap:wrap}
 .kindbar .count{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:600;color:var(--dim)}
 .drop{border:2px dashed var(--line);border-radius:12px;padding:18px 14px;text-align:center;background:var(--bg2)}
 .drop.over{border-color:var(--orange);background:rgba(250,70,22,.08)}
@@ -166,7 +167,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.8';
+const APP_BUILD='2026.10.05.9';
 // ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
 // so the regression suite can run on the same device as real data without touching it
 const TEST=/[?&]test=1(&|$)/.test(location.search);
@@ -841,8 +842,26 @@ function sessionStats(s){
   if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,s.hh||HH(),s.bq||Q(),s.pitch); if(c)return c;}
   return s.summary||{};
 }
-const rawSorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
-  .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+/* Seasons follow the youth calendar: spring Jan–May, summer Jun–Jul, fall Aug–Dec. Games are
+   always read one season at a time (GameChanger's season lines restart), the cage defaults to all
+   time; either can be switched in the bar at the top. */
+function seasonOf(d){const y=d.slice(0,4), m=+d.slice(5,7); return y+'-'+(m<=5?'1':(m<=7?'2':'3'))}
+const seasonLabel=k=>k==='all'?'All time':({'1':'Spring','2':'Summer','3':'Fall'}[k.slice(5)]||'')+' '+k.slice(0,4);
+let SEASONSEL=(()=>{try{return JSON.parse(localStorage.getItem(KEY+'.season'))||{}}catch(e){return {}}})();
+const seasonsOf=kind=>[...new Set(DB.sessions.filter(s=>kindOf(s)===kind).map(s=>seasonOf(s.date)))].sort().reverse();
+function seasonFor(kind){
+  const sel=SEASONSEL[kind], list=seasonsOf(kind);
+  if(sel==='all')return'all'; if(sel&&list.includes(sel))return sel;
+  return kind==='games'?(list[0]||'all'):'all';
+}
+function setSeason(v){SEASONSEL[VIEWKIND]=v; try{localStorage.setItem(KEY+'.season',JSON.stringify(SEASONSEL))}catch(e){} DASHSEL=null; render()}
+// pitch type (the session type) — Trends and the Report only, so like is compared with like
+let FEEDSEL={hitting:'all',catching:'all'};
+const feedOf=kind=>(kind!=='games'&&(TAB==='trends'||TAB==='report')&&FEEDSEL[kind]&&FEEDSEL[kind]!=='all')?FEEDSEL[kind]:null;
+const rawSorted=(kind,raw)=>{kind=kind||VIEWKIND;
+  const se=raw?'all':seasonFor(kind), fe=raw?null:feedOf(kind);
+  return DB.sessions.filter(s=>kindOf(s)===kind&&(se==='all'||seasonOf(s.date)===se)&&(!fe||s.type===fe))
+  .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);}
 /* One day = one session. HitTrax writes a file per round, so a single trip to the cage can
    arrive as several uploads; everything downstream works on day-sessions, with the individual
    uploads kept underneath so they can still be inspected and deleted. */
@@ -852,10 +871,10 @@ const dispo=s=>s.group||'in';
 // so the session type does: throws to third stay their own entry and out of every 2B comparison.
 const is3B=s=>kindOf(s)==='catching'&&/3B/.test(s.type||'');
 const vs2B=list=>list.filter(e=>!e.base3);
-function daySessions(kind){
+function daySessions(kind,raw){
   kind=kind||VIEWKIND;
   const by={}, out=[], snaps=[];
-  rawSorted(kind).forEach(s=>{
+  rawSorted(kind,raw).forEach(s=>{
     if(isSnap(s)){if(dispo(s)!=='out')snaps.push(s); return}
     (by[s.date]=by[s.date]||[]).push(s)});
   Object.keys(by).sort().forEach(d=>{
@@ -869,7 +888,10 @@ function daySessions(kind){
     parts.filter(s=>dispo(s)==='solo').forEach(s=>out.push(Object.assign({},s,{parts:[s],solo:true},is3B(s)?{base3:true}:{})));
   });
   out.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
-  return kind==='games'?gameTimeline(out,snaps):out;
+  if(kind!=='games')return out;
+  // season lines restart every season, so each season is its own timeline
+  const keys=[...new Set(out.concat(snaps).map(e=>seasonOf(e.date)))].sort();
+  return keys.flatMap(k=>gameTimeline(out.filter(e=>seasonOf(e.date)===k),snaps.filter(x=>seasonOf(x.date)===k)));
 }
 const excludedOf=kind=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND)&&dispo(s)==='out')
   .sort((a,b)=>a.date<b.date?1:-1);
@@ -1359,7 +1381,9 @@ const GSECT=[
                    ['cPct','C%'],['babip','BABIP'],['risp','BA/RISP'],['ps','Pitches seen'],['lob','LOB']]],
   ['Behind the plate',[['inn','Innings'],['pb','PB'],['sba','SB allowed'],['csa','CS']]],
   ['In the field',[['po','PO'],['a','A'],['e','E']]],
+  ['Pitching (optional — only if he pitched)',[['ip','IP'],['np','Pitches']]],
 ];
+const INNK=['inn','ip'];                    // innings-pitched/caught columns: thirds, carried as outs
 const GCOUNT=GSECT.flatMap(s=>s[1]);
 // Innings are written in thirds: 14.1 is 14⅓, 14.2 is 14⅔. Added as decimals, 14.1 + 6.2 comes
 // out 20.3 instead of 21 — so innings are always carried as outs and only written back at the end.
@@ -1386,7 +1410,7 @@ function computeGame(c){
     csPct:(thrown+stolen)?thrown/(thrown+stolen)*100:null};
   s.ops=(s.obp!=null&&s.slg!=null)?s.obp+s.slg:null;
   // passed balls per 6-inning game — the one receiving/blocking number a box score gives
-  s.outs=innOuts(c.inn);
+  s.outs=innOuts(c.inn); s.ipOuts=innOuts(c.ip);
   s.pb6=(s.outs&&c.pb!=null)?n('pb')/(s.outs/3)*6:null;
   return s;
 }
@@ -1394,7 +1418,7 @@ const GRATE=['ldPct','fbPct','gbPct','cPct','babip','risp'];
 function sumGames(list){
   const tot={};
   GCOUNT.forEach(([k])=>{ if(GRATE.includes(k))return;
-    if(k==='inn'){const o=list.reduce((a,g)=>a+(innOuts(g.inn)||0),0); if(o)tot.inn=outsToInn(o); return}
+    if(INNK.includes(k)){const o=list.reduce((a,g)=>a+(innOuts(g[k])||0),0); if(o)tot[k]=outsToInn(o); return}
     const v=list.reduce((a,g)=>a+(num(g[k])||0),0); if(v)tot[k]=v});
   GRATE.forEach(k=>{                       // percentages: weight by plate appearances
     const have=list.filter(g=>num(g[k])!=null);
@@ -1414,27 +1438,27 @@ const GDIFF=GRATE.filter(k=>k!=='risp');            // BA/RISP has no usable wei
 function gameTimeline(days,snaps){
   const ev=days.map(d=>({e:d,t:0})).concat(snaps.map(s=>({e:s,t:1})))
     .sort((a,b)=>a.e.date<b.e.date?-1:a.e.date>b.e.date?1:(a.t-b.t)||((a.e.mtime||0)-(b.e.mtime||0)));
-  let acc={}, outs=0, W={}, P={};
+  let acc={}, O={}, W={}, P={};
   const out=[];
   ev.forEach(({e,t})=>{
     const st=t?computeGame(e.summary||{}):sessionStats(e);
     if(!t){
-      GCOUNT.forEach(([k])=>{if(!GRATE.includes(k)&&k!=='inn')acc[k]=(acc[k]||0)+(num(st[k])||0)});
-      outs+=st.outs||0;                                             // gp is in GCOUNT (computeGame makes it ≥1)
+      GCOUNT.forEach(([k])=>{if(!GRATE.includes(k)&&!INNK.includes(k))acc[k]=(acc[k]||0)+(num(st[k])||0)});   // gp included (≥1)
+      INNK.forEach(k=>{O[k]=(O[k]||0)+(innOuts(st[k])||0)});
       GDIFF.forEach(k=>{if(num(st[k])!=null&&st.pa){W[k]=(W[k]||0)+st[k]*st.pa; P[k]=(P[k]||0)+st.pa}});
       out.push(e); return;
     }
     const line={}, gpBefore=acc.gp||0;
-    GCOUNT.forEach(([k])=>{ if(GRATE.includes(k)||k==='inn')return;
+    GCOUNT.forEach(([k])=>{ if(GRATE.includes(k)||INNK.includes(k))return;
       const v=num(st[k]); if(v==null)return;
       const d=+(v-(acc[k]||0)).toFixed(3); if(d>0)line[k]=d});
-    if(st.outs!=null){const d=st.outs-outs; if(d>0)line.inn=outsToInn(d)}
+    INNK.forEach(k=>{const o=innOuts(st[k]); if(o!=null){const d=o-(O[k]||0); if(d>0)line[k]=outsToInn(d)}});
     GDIFF.forEach(k=>{ if(num(st[k])==null||!st.pa)return;
       const p=st.pa-(P[k]||0), w=st[k]*st.pa-(W[k]||0);
       if(p>0)line[k]=Math.max(0,Math.min(k==='babip'?1:100,w/p))});
     // reset the running total to the snapshot itself
-    acc={}; GCOUNT.forEach(([k])=>{if(!GRATE.includes(k)&&k!=='inn')acc[k]=num(st[k])||0});
-    acc.gp=num(st.gp)||gpBefore; outs=st.outs||0; W={}; P={};
+    acc={}; GCOUNT.forEach(([k])=>{if(!GRATE.includes(k)&&!INNK.includes(k))acc[k]=num(st[k])||0});
+    acc.gp=num(st.gp)||gpBefore; O={}; INNK.forEach(k=>{O[k]=innOuts(st[k])||0}); W={}; P={};
     GDIFF.forEach(k=>{if(num(st[k])!=null&&st.pa){W[k]=st[k]*st.pa; P[k]=st.pa}});
     if(!((line.pa||0)>0||(line.gp||0)>0||line.inn))return;          // everything in it was logged game by game
     if(!line.gp)line.gp=1;
@@ -1450,7 +1474,8 @@ function seasonCard(S){
   const t=sumGames(games);
   const tile=(k,label,fmtv,sub)=>`<div class="tile"><div class="k">${label}</div>
     <div class="v">${fmtv}</div>${sub?`<div class="d flat">${sub}</div>`:''}</div>`;
-  return `<div class="card"><h2>Season to date</h2>
+  const se=seasonFor('games');
+  return `<div class="card"><h2>${se==='all'?'All seasons':'Season to date — '+seasonLabel(se)}</h2>
    <div class="hint">${t.gp} game${t.gp>1?'s':''} · ${t.pa||0} plate appearance${t.pa===1?'':'s'}${S.some(s=>s.snap)?' · season updates from GameChanger replace each other, never add up':''}</div>
    <div class="tiles">
      ${tile('avg','Batting average',avg3(t.avg),`${t.h||0} for ${t.ab||0}`)}
@@ -1469,8 +1494,9 @@ function cageVsGameCard(){
   const games=sorted('games').map(s=>sessionStats(s));
   if(!games.length)return'';
   const g=sumGames(games);
-  const hit=sorted('hitting').flatMap(s=>s.balls||[]);
-  const cst=(()=>{const T=vs2B(sorted('catching')).flatMap(s=>s.throws||[]); return T.length?computeFromThrows(T):null})();
+  const gse=seasonFor('games'), inSe=s=>gse==='all'||seasonOf(s.date)===gse;
+  const hit=daySessions('hitting',true).filter(inSe).flatMap(s=>(s.balls||[]).filter(b=>!SUS.has(b)));
+  const cst=(()=>{const T=vs2B(daySessions('catching',true)).filter(inSe).flatMap(s=>s.throws||[]); return T.length?computeFromThrows(T):null})();
   if(!hit.length&&!cst)return'';
   const c=hit.length?computeFromBalls(hit,HH()):null, o=outcomeLine(hit);
   // balls in play in games, the denominator for every game rate below
@@ -2229,13 +2255,17 @@ const TABS=[['dash','Dashboard'],['log','Log Session'],['trends','Trends'],['ses
 let TAB='dash', TRENDK='maxEV', DASHSEL=null;
 function render(){
   flagSuspects();
-  const showKind=countOf('catching')>0||VIEWKIND==='catching';
+  const showKind=countOf('catching')>0||VIEWKIND==='catching'||DB.sessions.some(s=>kindOf(s)==='games');
   document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
     `<button class="${TAB===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
-  document.getElementById('kindBar').innerHTML=showKind&&TAB!=='log'&&TAB!=='data'
-    ?`<div class="kindbar"><span>Showing</span><div class="seg">`+
+  const seas=seasonsOf(VIEWKIND), cur=seasonFor(VIEWKIND);
+  const seasonPick=seas.length?`<select class="inline" style="max-width:150px;padding:4px 8px;font-size:12.5px" onchange="setSeason(this.value)" title="Season">
+      ${seas.map(k=>`<option value="${k}"${k===cur?' selected':''}>${seasonLabel(k)}</option>`).join('')}
+      <option value="all"${cur==='all'?' selected':''}>All time</option></select>`:'';
+  document.getElementById('kindBar').innerHTML=(showKind||seas.length>1)&&TAB!=='log'&&TAB!=='data'
+    ?`<div class="kindbar">${showKind?`<span>Showing</span><div class="seg">`+
       Object.keys(KIND).map(k=>`<button class="${VIEWKIND===k?'on':''}" onclick="setKind('${k}')">${KIND[k].icon} ${KIND[k].label}</button>`).join('')+
-      `</div><span class="count">${countOf(VIEWKIND)} session${countOf(VIEWKIND)===1?'':'s'}</span></div>`:'';
+      `</div>`:''}<span class="count">${countOf(VIEWKIND)} ${VIEWKIND==='games'?'entr'+(countOf(VIEWKIND)===1?'y':'ies'):'session'+(countOf(VIEWKIND)===1?'':'s')}</span>${seasonPick}</div>`:'';
   const p=DB.player;
   document.getElementById('who').innerHTML=p.name?
     `<b>${esc(p.name)}</b>${[p.age?p.age+' yrs':'',p.level].filter(Boolean).map(esc).join(' · ')}`:
@@ -2350,7 +2380,7 @@ function vDash(){
   ${(cat||gm)?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
   ${gm?'':(cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[]))}
   ${cat?throwBarsCard(last.throws||[]):''}
-  ${cat?workloadCard():''}
+  ${(cat||gm)?workloadCard():''}
   ${(cat||gm)?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
   ${goalsCard(VIEWKIND)}
@@ -2435,38 +2465,91 @@ function popSplit(st){
    against his own recent average. Only HitTrax throws are counted — games and bullpens add more. */
 const dateFrom=ds=>{const [y,m,d]=ds.split('-').map(Number); return new Date(y,m-1,d)};   // local midnight
 function mondayOf(ds){const dt=dateFrom(ds); dt.setDate(dt.getDate()-((dt.getDay()+6)%7)); return localDate(dt)}
-function workloadCard(){
-  const throwsOn={};
+/* Pitch Smart (MLB / USA Baseball): daily pitch maximum by age, and required rest by pitch count.
+   Only used if pitches are logged on a game — if he doesn't pitch, none of this shows. */
+const PS_DAILY=[[8,50],[10,75],[12,85],[14,95],[16,95],[18,105]];
+const psDaily=age=>{age=+age||12; const r=PS_DAILY.find(x=>age<=x[0]); return r?r[1]:105};
+function psRest(age,np){
+  if((+age||12)<=14)return np>=66?4:np>=51?3:np>=36?2:np>=21?1:0;
+  return np>=76?4:np>=61?3:np>=46?2:np>=31?1:0;
+}
+const addDays=(ds,n)=>{const d=dateFrom(ds); d.setDate(d.getDate()+n); return localDate(d)};
+const prettyDate=ds=>dateFrom(ds).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+// game entries whose date can be trusted for load — not a season update covering several games
+function datedGames(){
+  return daySessions('games',true).map(e=>({e,g:sessionStats(e)}))
+    .filter(x=>!(x.e.snap&&(num(x.g.gp)||1)>2));
+}
+function armCare(){
+  const throwsOn={}, outsOn={};
   DB.sessions.filter(s=>kindOf(s)==='catching'&&dispo(s)!=='out').forEach(s=>{
-    const n=(s.throws||[]).filter(x=>['clean','misfire'].includes(throwClass(x))).length
-      ||num((s.summary||{}).throws)||0;
+    const n=(s.throws||[]).filter(x=>['clean','misfire'].includes(throwClass(x))).length||num((s.summary||{}).throws)||0;
     if(n)throwsOn[s.date]=(throwsOn[s.date]||0)+n;
   });
-  const dates=Object.keys(throwsOn); if(!dates.length)return'';
-  const today=localDate(), wk={};
-  dates.forEach(d=>{const w=mondayOf(d); wk[w]=(wk[w]||0)+throwsOn[d]});
-  const thisMon=mondayOf(today), weeks=[];
-  for(let i=5;i>=0;i--){const dt=dateFrom(thisMon); dt.setDate(dt.getDate()-7*i);
-    const k=localDate(dt); weeks.push({k,n:wk[k]||0})}
-  const now=weeks[5].n, prior=weeks.slice(1,5), active=prior.filter(w=>w.n>0);
-  const chronic=active.length>=2?prior.reduce((a,w)=>a+w.n,0)/4:null, ratio=chronic?now/chronic:null;
+  const G=datedGames();
+  G.forEach(({e,g})=>{if(g.outs)outsOn[e.date]=(outsOn[e.date]||0)+g.outs});
+  const skipped=daySessions('games',true).filter(e=>e.snap&&(num(sessionStats(e).gp)||1)>2)
+    .reduce((a,e)=>a+(sessionStats(e).outs||0),0);
+  const today=localDate(), thisMon=mondayOf(today), weeks=[];
+  for(let i=5;i>=0;i--){const dt=dateFrom(thisMon); dt.setDate(dt.getDate()-7*i); weeks.push({k:localDate(dt),n:0,outs:0})}
+  const wk=ds=>weeks.find(w=>w.k===mondayOf(ds));
+  Object.keys(throwsOn).forEach(d=>{const w=wk(d); if(w)w.n+=throwsOn[d]});
+  Object.keys(outsOn).forEach(d=>{const w=wk(d); if(w)w.outs+=outsOn[d]});
+  // this week against the four before — an arm gets sore after a jump in load, not a steady one
+  const ratioOf=f=>{const prior=weeks.slice(1,5), active=prior.filter(w=>f(w)>0);
+    const chronic=active.length>=2?prior.reduce((a,w)=>a+f(w),0)/4:null;
+    return {now:f(weeks[5]),chronic,ratio:chronic?f(weeks[5])/chronic:null}};
+  const T=ratioOf(w=>w.n), I=ratioOf(w=>w.outs);
+  // heaviest three days in the last two weeks (a tournament weekend)
+  let heavy=null;
+  for(let i=0;i<14;i++){const end=addDays(today,-i); let o=0;
+    for(let j=0;j<3;j++)o+=outsOn[addDays(end,-j)]||0;
+    if(o>=36&&(!heavy||o>heavy.outs))heavy={outs:o,from:addDays(end,-2),to:end}}
+  // pitching, only if logged
+  const pitched=G.filter(x=>num(x.g.np)>0).sort((a,b)=>a.e.date<b.e.date?-1:1);
+  let pitch=null;
+  if(pitched.length){const L=pitched[pitched.length-1], np=num(L.g.np), age=DB.player.age;
+    const rest=psRest(age,np), eligible=addDays(L.e.date,rest+1);
+    pitch={date:L.e.date,np,rest,eligible,ready:today>=eligible,max:psDaily(age),over:np>psDaily(age)}}
+  const both=G.filter(x=>num(x.g.np)>0&&(x.g.outs||0)>0&&x.e.date>=addDays(today,-30)).map(x=>x.e.date);
+  return {weeks,T,I,heavy,pitch,both,skipped,any:Object.keys(throwsOn).length||Object.keys(outsOn).length||pitched.length};
+}
+function workloadCard(){
+  const A=armCare(); if(!A.any)return'';
+  const {weeks,T,I}=A;
   const maxN=Math.max(1,...weeks.map(w=>w.n));
-  let read;
-  if(ratio==null)read='Needs a couple more weeks of logged throwing before this week can be compared with his normal load.';
-  else if(ratio>=1.5)read=`<b>Spike:</b> ${now} throws this week is ${ratio.toFixed(1)}× his recent average of ${Math.round(chronic)}. Jumps like this are when arms get sore — ease the next session or two.`;
-  else if(ratio<=0.6&&now>0)read=`Light week (${ratio.toFixed(1)}× normal) — fine, but ramp back up gradually rather than jumping straight to a big day.`;
-  else read=`Steady: ${now} throws this week vs a recent average of ${Math.round(chronic)} (${ratio.toFixed(1)}×).`;
+  const reads=[];
+  let warn=false;
+  if(T.ratio==null){if(weeks.some(w=>w.n))reads.push('HitTrax throws: needs a couple more weeks logged before this week can be compared with his normal load.')}
+  else if(T.ratio>=1.5){warn=true; reads.push(`<b>Spike:</b> ${T.now} HitTrax throws this week is ${T.ratio.toFixed(1)}× his recent average of ${Math.round(T.chronic)}. Jumps like this are when arms get sore — ease the next session or two.`)}
+  else if(T.ratio<=0.6&&T.now>0)reads.push(`Light throwing week (${T.ratio.toFixed(1)}× normal) — fine, but ramp back up gradually rather than jumping straight to a big day.`);
+  else reads.push(`Throws steady: ${T.now} this week vs a recent average of ${Math.round(T.chronic)} (${T.ratio.toFixed(1)}×).`);
+  if(I.ratio!=null&&I.ratio>=1.5&&I.now>=18){warn=true; reads.push(`<b>Catching load up:</b> ${innStr(I.now)} innings caught this week, ${I.ratio.toFixed(1)}× his recent average of ${innStr(Math.round(I.chronic))}.`)}
+  else if(I.now)reads.push(`${innStr(I.now)} innings caught in games this week${I.chronic?` (recent average ${innStr(Math.round(I.chronic))})`:''}.`);
+  if(A.heavy){warn=true; reads.push(`<b>Heavy stretch:</b> ${innStr(A.heavy.outs)} innings caught ${prettyDate(A.heavy.from)} – ${prettyDate(A.heavy.to)}. There's no official limit for catchers, but that's two-plus full games of squatting and throwing — keep the next throwing session light.`)}
+  let pitchHtml='';
+  if(A.pitch){const P=A.pitch;
+    pitchHtml=`<div style="margin-top:12px"><label>Pitching — Pitch Smart</label>
+      <div class="note${P.ready&&!P.over?'':' warn'}">Last outing ${prettyDate(P.date)}: <b>${P.np} pitches</b> → ${P.rest} day${P.rest===1?'':'s'} of rest.
+        ${P.ready?'Rested — can pitch again.':`<b>Can pitch again ${prettyDate(P.eligible)}.</b>`}
+        ${P.over?`<br><b>Over the daily maximum</b> of ${P.max} for his age.`:''}
+        ${A.both.length?`<br><b>Pitched and caught on the same day</b> (${A.both.map(prettyDate).join(', ')}) — Pitch Smart says to avoid catching while pitching; the catcher throws as much as anyone on the field.`:''}</div></div>`;
+    if(!P.ready||P.over||A.both.length)warn=true;
+  }
   const bars=weeks.map((w,i)=>{const h=Math.round((w.n/maxN)*70), cur=i===5;
     return `<div style="flex:1;text-align:center">
       <div style="height:74px;display:flex;align-items:flex-end;justify-content:center">
         <div title="${w.n} throws, week of ${esc(w.k)}" style="width:62%;height:${Math.max(w.n?3:1,h)}px;border-radius:4px 4px 0 0;
-          background:${cur?(ratio>=1.5?'var(--red)':'var(--orange)'):'rgba(61,109,240,.7)'}"></div></div>
+          background:${cur?(T.ratio>=1.5?'var(--red)':'var(--orange)'):'rgba(61,109,240,.7)'}"></div></div>
       <div style="font-size:11px;font-weight:700;margin-top:3px">${w.n||'—'}</div>
+      ${weeks.some(x=>x.outs)?`<div style="font-size:10.5px;color:var(--amber);font-weight:700">${w.outs?innStr(w.outs)+' inn':'·'}</div>`:''}
       <div class="hint" style="font-size:10px">${cur?'this wk':esc(w.k.slice(5))}</div></div>`}).join('');
   return `<div class="card"><h2>Arm care</h2>
-    <div class="hint">Throws logged per week (Mon–Sun). Only HitTrax throws are counted — game innings and bullpens add more.</div>
+    <div class="hint">Per week (Mon–Sun): HitTrax throw-downs (bars — max-effort throws) and innings caught in games
+      (amber — every pitch is a throw back, plus the throw-downs)${A.skipped?`. ${innStr(A.skipped)} innings from a multi-game season update aren't dated, so they're left out of the weeks`:''}.</div>
     <div style="display:flex;gap:4px;margin-top:10px">${bars}</div>
-    <div class="note${ratio>=1.5?' warn':''}" style="margin-top:12px">${read}</div></div>`;
+    <div class="note${warn?' warn':''}" style="margin-top:12px">${reads.join('<br>')||'No throw-downs or innings caught logged this week yet.'}</div>
+    ${pitchHtml}</div>`;
 }
 function popBenchCard(st,b){
   const v=num(st.bestPop)!=null?num(st.bestPop):num(st.avgPop); if(v==null)return'';
@@ -3026,8 +3109,11 @@ function coachSummaryCard(){
     if(num(allPop.cleanPct)!=null&&allPop.cleanPct<80)push(F,2,'Catching',`${Math.round(allPop.cleanPct)}% of throw-down reps are clean.`,'Slow it down: ten throw-downs focused only on a clean transfer before adding speed.');
   }
   // arm care outranks everything
-  const wl=(()=>{const html=workloadCard(); return /Spike:/.test(html)})();
-  if(wl)push(F,5,'Catching','Throwing load jumped this week.','Cut the next session’s throws roughly in half and build back up over a week.');
+  const AC=armCare();
+  if(AC.T.ratio>=1.5)push(F,5,'Catching','Throwing load jumped this week.','Cut the next session’s throws roughly in half and build back up over a week.');
+  if(AC.I.ratio>=1.5&&AC.I.now>=18||AC.heavy)push(F,4.5,'Catching',AC.heavy?`${innStr(AC.heavy.outs)} innings caught in three days.`:`${innStr(AC.I.now)} innings caught this week — well above his normal.`,'Keep the next HitTrax throwing session short and light; no long toss until his arm feels fresh.');
+  if(AC.pitch&&!AC.pitch.ready)push(F,6,'Pitching',`Pitch Smart rest: ${AC.pitch.np} pitches on ${prettyDate(AC.pitch.date)} means no pitching until ${prettyDate(AC.pitch.eligible)}.`,'Rest days are rest from pitching — light catch is fine, max-effort throwing (throw-downs included) is not.');
+  if(AC.both.length)push(F,5.5,'Pitching',`Pitched and caught on the same day (${prettyDate(AC.both[AC.both.length-1])}).`,'Pitch Smart: avoid catching while pitching — pick one position for the day.');
   // --- games ---
   const G=sorted('games').map(s=>sessionStats(s));
   if(G.length){
@@ -3415,10 +3501,23 @@ function trendModeBar(){
     <button class="${TRENDMODE==='session'?'on':''}" onclick="TRENDMODE='session';render()">By session</button>
     <button class="${TRENDMODE==='rolling'?'on':''}" onclick="TRENDMODE='rolling';render()">Rolling by ${VIEWKIND==='catching'?'throw':'ball'}</button></div>`;
 }
+/* pitch-type filter for Trends and the Report: front toss, machine and live BP produce different
+   exit velos and launch angles, so progress is read within one type when you want it to be */
+function feedBar(){
+  const kind=VIEWKIND; if(kind==='games')return'';
+  const se=seasonFor(kind);
+  const types=[...new Set(DB.sessions.filter(x=>kindOf(x)===kind&&(se==='all'||seasonOf(x.date)===se)).map(x=>x.type).filter(Boolean))].sort();
+  if(types.length<2){FEEDSEL[kind]='all';return''}
+  if(FEEDSEL[kind]!=='all'&&!types.includes(FEEDSEL[kind]))FEEDSEL[kind]='all';
+  const b=(v,l)=>`<button class="${FEEDSEL[kind]===v?'on':''}" onclick="FEEDSEL.${kind}=this.dataset.v;render()" data-v="${esc(v)}">${esc(l)}</button>`;
+  return `<div class="row noprint" style="align-items:center;gap:8px;margin:10px 0 0">
+    <span class="hint" style="text-transform:uppercase;letter-spacing:.05em;font-size:11px">${kind==='catching'?'Drill':'Pitch type'}</span>
+    <div class="seg" style="flex-wrap:wrap">${b('all','All')}${types.map(t=>b(t,t)).join('')}</div></div>`;
+}
 function vTrends(){
-  if(TRENDMODE==='rolling')return `<div style="margin-top:14px">${trendModeBar()}</div>`+rollingView();
+  if(TRENDMODE==='rolling')return `<div style="margin-top:14px">${trendModeBar()}</div>${feedBar()}`+rollingView();
   const avail=KIND[VIEWKIND].metrics.filter(m=>series(m.k).length>0);
-  if(!avail.length)return '<div class="card"><div class="empty">Log a session first.</div></div>';
+  if(!avail.length)return `<div style="margin-top:14px">${trendModeBar()}</div>${feedBar()}<div class="card"><div class="empty">${feedOf(VIEWKIND)?'No sessions of this type in the selected season.':'Log a session first.'}</div></div>`;
   if(!avail.find(m=>m.k===TRENDK))TRENDK=avail[0].k;
   const S=series(TRENDK);
   const b=bench(DB.player.age), pb=popBench(DB.player.age);
@@ -3453,7 +3552,7 @@ function vTrends(){
        return `<tr class="clickable" onclick="TRENDK='${m.k}';render();window.scrollTo(0,0)"><td>${m.n}</td><td>${fmt(m.k,f.v)}</td>
         <td style="font-weight:700">${fmt(m.k,l.v)}</td><td class="${dirClass(m.k,d)}" style="font-weight:700">${d==null?'—':dstr(m.k,d)}</td>
         <td>${bs?fmt(m.k,bs.v):'—'}</td></tr>`}).join('')+`</tbody></table></div>`;
-  return `<div style="margin-top:14px">${trendModeBar()}</div><div class="card">
+  return `<div style="margin-top:14px">${trendModeBar()}</div>${feedBar()}<div class="card">
    <h2>Trends</h2><div class="hint">${VIEWKIND==='games'
      ?'Season to date after each game. Counting stats are running totals.'
      :'Dots are sized by sample — hollow ones are too small to trust. The dashed blue rolling average is weighted by sample size, so a 5-ball session can’t swing it.'}</div>
@@ -3645,7 +3744,7 @@ function gamesReport(){
     <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
       <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
     <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — game report</h2>
-    <div class="hint">${esc(S[0].date)} → ${esc(S[S.length-1].date)} · ${t.gp} game${t.gp>1?'s':''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
+    <div class="hint">${esc(seasonLabel(seasonFor('games')))} · ${esc(S[0].date)} → ${esc(S[S.length-1].date)} · ${t.gp} game${t.gp>1?'s':''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
     <label style="margin-top:14px">At the plate</label>${bat}${rates}
     ${catchLine?`<label style="margin-top:14px">Behind the plate</label>${catchLine}`:''}
     ${fieldLine?`<label style="margin-top:14px">In the field</label>${fieldLine}`:''}
@@ -3659,7 +3758,7 @@ function gamesReport(){
 function vReport(){
   if(VIEWKIND==='games')return gamesReport();
   const S=sorted();
-  if(S.length<2)return '<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
+  if(S.length<2)return feedBar()+'<div class="card"><div class="empty">Log at least two sessions to build a progress report.</div></div>';
   const from=S[0].date,to=S[S.length-1].date, cat=VIEWKIND==='catching';
   const b=cat?popBench(DB.player.age):bench(DB.player.age);
   // the first visits against the latest, pooled and tested — what a coach should read, not two single days
@@ -3673,11 +3772,12 @@ function vReport(){
     return `<tr><td>${m.n}</td><td>${fmt(m.k,f)}</td><td style="font-weight:700">${fmt(m.k,l)}</td>
       <td class="${dirClass(m.k,d)}" style="font-weight:700">${dstr(m.k,d)}</td><td style="color:var(--dim);font-size:12.5px">typed summaries — not tested</td>
       <td>${bs?fmt(m.k,bs.v)+' · '+bs.date:'—'}</td></tr>`}).filter(Boolean).join('');
-  return `<div class="card">
+  const scope=[seasonFor(VIEWKIND)!=='all'?seasonLabel(seasonFor(VIEWKIND)):'',feedOf(VIEWKIND)||''].filter(Boolean).map(esc).join(' · ');
+  return feedBar()+`<div class="card">
     <div class="row noprint"><button class="btn" onclick="window.print()">Print / save as PDF</button>
       <button class="btn sec" onclick="copyReport()">Copy as text</button></div>
     <h2 style="margin-top:14px;font-size:20px">${esc(DB.player.name||'Player')} — HitTrax ${cat?'catching':'hitting'} progress report</h2>
-    <div class="hint">${from} → ${to} · ${S.length} sessions${DB.player.age?' · age '+esc(DB.player.age):''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
+    <div class="hint">${scope?scope+' · ':''}${from} → ${to} · ${S.length} sessions${DB.player.age?' · age '+esc(DB.player.age):''}${DB.player.level?' · '+esc(DB.player.level):''}</div>
     ${PR?`<div class="hint" style="margin-top:8px">${esc(PR.label)}. "Real" means the change holds up comparing visit against visit,
       so one good day can't make it; maxes are single balls and top-quarter averages have no clean error bar, so neither is tested.</div>`:''}
     <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Metric</th><th>Start</th><th>Now</th><th>Change</th><th>Read</th><th>Best</th></tr></thead>

@@ -271,6 +271,54 @@ function tests(){
   check('Games report','catching line shows innings in thirds and PB per 6',/14⅓/.test(rep)&&/2\.1/.test(rep));
   check('Coach’s read','passed balls become the thing to work on',/5 passed balls in 14⅓ innings/.test(run(`coachSummaryCard()`)));
 
+  // seasons
+  eq('Seasons','October is fall',run(`seasonLabel(seasonOf('2026-10-05'))`),'Fall 2026');
+  eq('Seasons','March is spring',run(`seasonLabel(seasonOf('2027-03-14'))`),'Spring 2027');
+  eq('Seasons','July is summer',run(`seasonLabel(seasonOf('2027-07-04'))`),'Summer 2027');
+  fresh();
+  run(`SEASONSEL={}; DB.sessions=[${SNAP('f1','2026-10-05','{gp:4,pa:9,ab:7,h:3}')},${SNAP('p1','2027-03-20','{gp:2,pa:8,ab:7,h:2}')}];`);
+  eq('Seasons','games open on the latest season',run(`seasonFor('games')`),'2027-1');
+  eq('Seasons','a new season’s first update starts from zero (not 8 − 9 PA)',season(),{gp:2,pa:8,h:2,ab:7,avg:0.286});
+  eq('Seasons','…and is labelled games 1–2 of that season',run(`snapLabel(sorted('games')[0])`),'Games 1–2');
+  run(`SEASONSEL={games:'all'};`);
+  eq('Seasons','all time adds the seasons together',season(),{gp:6,pa:17,h:5,ab:14,avg:0.357});
+  run(`SEASONSEL={};`);
+  eq('Seasons','the cage defaults to all time',run(`seasonFor('hitting')`),'all');
+
+  // pitch-type filter
+  fresh();
+  run(`DB.sessions=[{id:'t1',kind:'hitting',date:'2026-09-01',type:'Front toss',mode:'detail',mtime:1,balls:[{ev:50,la:10}]},
+     {id:'t2',kind:'hitting',date:'2026-09-02',type:'Machine',mode:'detail',mtime:2,balls:[{ev:55,la:12}]}];
+     TAB='trends'; FEEDSEL.hitting='Machine';`);
+  eq('Pitch type','Trends reads only the chosen type',run(`sorted('hitting').map(s=>s.type).join(',')`),'Machine');
+  run(`TAB='dash';`);
+  eq('Pitch type','the dashboard still sees everything',run(`sorted('hitting').length`),2);
+  run(`FEEDSEL.hitting='all';`);
+
+  // arm care and Pitch Smart
+  eq('Pitch Smart','12-year-old, 40 pitches: 2 days rest',run(`psRest(12,40)`),2);
+  eq('Pitch Smart','66+ pitches: 4 days',run(`psRest(12,66)`),4);
+  eq('Pitch Smart','20 pitches: no rest needed',run(`psRest(12,20)`),0);
+  eq('Pitch Smart','16-year-old, 40 pitches: 1 day (older table)',run(`psRest(16,40)`),1);
+  eq('Pitch Smart','daily max at 12 is 85, at 10 is 75',run(`psDaily(12)+'/'+psDaily(10)`),'85/75');
+  eq('Innings','innings pitched add in thirds too (2.1 + 1.2 = 4)',run(`sumGames([computeGame({ip:2.1}),computeGame({ip:1.2})]).ip`),4);
+  fresh();
+  run(`__d=k=>addDays(localDate(),-k);`);
+  run(`DB.sessions=[{id:'a1',kind:'games',date:__d(1),type:'Game',mode:'game',mtime:1,summary:{pa:3,ab:3,np:40}},
+     {id:'a2',kind:'games',date:__d(2),type:'Game',mode:'game',mtime:2,summary:{pa:3,ab:3,inn:6}},
+     {id:'a3',kind:'games',date:__d(3),type:'Game',mode:'game',mtime:3,summary:{pa:3,ab:3,inn:6}},
+     {id:'a4',kind:'games',date:__d(1),type:'Game',mode:'game',mtime:4,summary:{pa:3,ab:3,inn:6}}];
+     __ac=armCare();`);
+  /* 40 pitches yesterday -> 2 rest days -> eligible the day after tomorrow: not ready today */
+  check('Arm care','yesterday’s 40 pitches: not rested yet',run(`!__ac.pitch.ready&&__ac.pitch.eligible===addDays(localDate(),2)`));
+  check('Arm care','pitched and caught the same day is flagged',run(`__ac.both.length===1`));
+  eq('Arm care','three days of catching: 18 innings flagged as a heavy stretch',run(`__ac.heavy&&__ac.heavy.outs`),54);
+  check('Coach’s read','Pitch Smart rest outranks everything',/no pitching until/.test(run(`coachSummaryCard()`)));
+  fresh();
+  run(`DB.sessions=[${SNAP('z1','2026-10-05','{gp:4,pa:9,ab:7,h:3,inn:14.1}')}]; __ac=armCare();`);
+  eq('Arm care','a multi-game season update isn’t dated — its innings are left out of the weeks',run(`__ac.skipped`),43);
+  check('Arm care','…and nothing is counted this week',run(`__ac.weeks[5].outs===0`));
+
   // dates
   eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
   check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));
