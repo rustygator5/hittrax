@@ -1519,6 +1519,52 @@ function zoneSplit(balls){
    rows.map(r=>`<tr><td>${r[0]}</td>${cell(r[1])}</tr>`).join('')+
    `</tbody></table></div></div>`;
 }
+/* The report's L / C / R block: fair territory split into three 30-degree wedges from the
+   catcher's view, with how often he goes there and what it looks like when he does. */
+function sprayAngle(b){
+  if(num(b.horiz)!=null)return +b.horiz;
+  const l=landing(b);
+  return l?Math.atan2(l.x,Math.max(l.z,0.01))*180/Math.PI:null;
+}
+function fieldThirds(balls){
+  const fair=balls.map(b=>({b,a:sprayAngle(b)})).filter(o=>o.a!=null&&Math.abs(o.a)<=45);
+  if(fair.length<3)return null;
+  const pick=(lo,hi)=>fair.filter(o=>o.a>=lo&&o.a<hi).map(o=>o.b);
+  const groups=[['L',pick(-45,-15)],['C',pick(-15,15)],['R',pick(15,45.001)]];
+  const avg=(a)=>a.length?a.reduce((x,c)=>x+c,0)/a.length:null;
+  return {n:fair.length, fouls:balls.length-fair.length,
+    cols:groups.map(([k,g])=>{const st=g.length?computeFromBalls(g,HH()):{}, o=outcomeLine(g);
+      return {k, n:g.length, pct:g.length/fair.length*100,
+        ev:num(st.avgEV), la:num(st.avgLA), dist:num(st.avgDist),
+        hha:num(st.hha), avg:o?o.avg:null};})};
+}
+function thirdsCard(balls,where){
+  const s=fieldThirds(balls); if(!s)return'';
+  const bats=(DB.player.bats||'R');
+  const pullKey=bats==='L'?'R':'L', oppoKey=bats==='L'?'L':'R';
+  const tag=k=>k===pullKey?' <span class="chip" style="font-size:9px">pull</span>'
+    :(k===oppoKey?' <span class="chip" style="font-size:9px">oppo</span>':'');
+  const row=(label,fn,fmtv)=>`<tr><td style="color:var(--dim)">${label}</td>`+
+    s.cols.map(c=>`<td style="font-weight:${label==='Share of balls'?'800':'600'}">${c.n?fmtv(fn(c)):'—'}</td>`).join('')+'</tr>';
+  return `<div class="card"><h2>Left · Centre · Right</h2>
+   <div class="hint">Fair territory in three 30° wedges, catcher's view ${where}${s.fouls?` · ${s.fouls} foul or unplaced ball${s.fouls>1?'s':''} left out`:''}</div>
+   <div class="scroll"><table><thead><tr><th></th>
+     ${s.cols.map(c=>`<th style="text-align:left">${c.k==='L'?'Left':(c.k==='C'?'Centre':'Right')}${tag(c.k)}</th>`).join('')}
+   </tr></thead><tbody>
+     ${row('Share of balls',c=>c.pct,v=>Math.round(v)+'%')}
+     ${row('Balls',c=>c.n,v=>v)}
+     ${row('Avg exit velo',c=>c.ev,v=>v==null?'—':v.toFixed(1)+' <small style="color:var(--dim)">mph</small>')}
+     ${row('Avg launch angle',c=>c.la,v=>v==null?'—':v.toFixed(0)+'°')}
+     ${row('Avg distance',c=>c.dist,v=>v==null?'—':Math.round(v)+' <small style="color:var(--dim)">ft</small>')}
+     ${row('Hard-hit',c=>c.hha,v=>v==null?'—':Math.round(v)+'%')}
+     ${row('Simulated AVG',c=>c.avg,v=>v==null?'—':avg3(v))}
+   </tbody></table></div>
+   <div style="margin-top:12px;display:flex;height:22px;border-radius:7px;overflow:hidden;border:1px solid var(--line)">
+     ${s.cols.map((c,i)=>c.n?`<div title="${c.k}" style="width:${c.pct}%;background:${['#f2b13c','#2fbf71','#3d6df0'][i]};display:grid;place-items:center;font-size:11px;font-weight:800;color:#0b1220">${c.pct>=12?Math.round(c.pct)+'%':''}</div>`:'').join('')}
+   </div>
+   <div class="legend"><span><i style="background:#f2b13c"></i>Left</span><span><i style="background:#2fbf71"></i>Centre</span><span><i style="background:#3d6df0"></i>Right</span></div>
+  </div>`;
+}
 function zoneCard(balls,where){
   if(!balls.some(b=>num(b.zone)!=null))return'';
   const n=balls.filter(b=>num(b.zone)!=null).length;
@@ -1645,6 +1691,7 @@ function vDash(){
   ${cat?'':gapsCard(last.balls,last)}
   ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
+  ${cat?'':thirdsCard(last.balls||[],'on '+last.date)}
   ${cat?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
   ${cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[])}
   ${cat?throwBarsCard(last.throws||[]):''}
@@ -2220,6 +2267,7 @@ function openSession(id){
    ${balls.length&&dataGaps(balls).length?`<div class="note warn" style="margin-top:16px">Logged before the app read
      ${dataGaps(balls).length} of HitTrax's columns — re-upload this CSV to fill in
      ${dataGaps(balls).map(x=>x.split(' — ')[0]).join(', ')}.</div>`:''}
+   ${(()=>{const c=thirdsCard(balls,'');return c?c.replace('<div class="card">','<div style="margin-top:18px">'):''})()}
    ${plateChart(balls)?`<div style="margin-top:18px"><label>Contact point in the zone</label>${plateChart(balls)}</div>`:''}
    ${balls.some(b=>num(b.zone)!=null)?`<div style="margin-top:18px"><label>Strike-zone heat map — ${ZMETRICS[ZM].toLowerCase()}</label>${zoneMap(balls)}${zoneSplit(balls)}</div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
