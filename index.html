@@ -992,6 +992,186 @@ function popChart(T){
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}${bars}${marks}
     <text x="${W/2}" y="${H-6}" fill="#6c7fa5" font-size="10" text-anchor="middle">throw order →</text></svg>`;
 }
+/* ============================== 3D flight paths ==============================
+   Every batted ball carries enough to rebuild its flight: exit velocity, launch angle,
+   spray direction, the contact height and HitTrax's projected distance. The arc below is
+   projectile motion at the measured speed and angle, with the horizontal scaled so the ball
+   lands on the distance HitTrax reported — that scale stands in for drag.
+   Hand-rolled pinhole camera on a canvas: no libraries, works offline. */
+const FT_PER_MPH=1.4667, G=32.17;
+function trajectory(b,steps){
+  const ev=num(b.ev), la=num(b.la);
+  if(ev==null||ev<=0||la==null)return null;
+  const v=ev*FT_PER_MPH, th=la*Math.PI/180;
+  const land=landing(b);
+  const phi=land?Math.atan2(land.x,Math.max(land.z,0.01))
+    :(num(b.horiz)!=null?num(b.horiz)*Math.PI/180:0);
+  const h0=(num(b.poiy)!=null&&+b.poiy>1)?(+b.poiy)/12:3;
+  const vy=v*Math.sin(th), vh=v*Math.cos(th);
+  const tf=(vy+Math.sqrt(Math.max(vy*vy+2*G*h0,0)))/G;        // time until it hits the ground
+  if(!(tf>0.05))return null;
+  const dist=land?Math.hypot(land.x,land.z):num(b.dist);
+  const r0=vh*tf;
+  const s=(dist&&r0>5)?Math.max(0.25,Math.min(1.25,dist/r0)):1;
+  const n=steps||48, pts=[];
+  for(let i=0;i<=n;i++){
+    const tt=tf*i/n, rr=vh*tt*s;
+    pts.push([rr*Math.sin(phi), Math.max(0,h0+vy*tt-0.5*G*tt*tt), rr*Math.cos(phi)]);
+  }
+  return {pts,tf,apex:Math.max.apply(null,pts.map(p=>p[1])),dist:dist||r0*s};
+}
+const CAMS={
+  behind:{p:[0,55,-120],t:[0,10,190],fov:74,n:'Behind the plate'},
+  side:  {p:[-260,70,90],t:[0,8,140],fov:60,n:'Third-base side'},
+  high:  {p:[0,200,-60],t:[0,0,165],fov:76,n:'High home'}
+};
+const vsub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const vdot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const vcross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const vnorm=a=>{const m=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/m,a[1]/m,a[2]/m]};
+function projector(cam,W,H){
+  const f=vnorm(vsub(cam.t,cam.p)), r=vnorm(vcross(f,[0,1,0])), u=vcross(r,f);
+  const K=W/(2*Math.tan(cam.fov*Math.PI/360));
+  return pt=>{const d=vsub(pt,cam.p), z=vdot(d,f);
+    if(z<=2)return null;
+    return [W/2+vdot(d,r)/z*K, H/2-vdot(d,u)/z*K, z];};
+}
+function arcPath(g,pr,d,step){
+  g.beginPath(); let on=false;
+  for(let a=-45;a<=45;a+=(step||2)){
+    const p=pr([Math.sin(a*Math.PI/180)*d,0,Math.cos(a*Math.PI/180)*d]);
+    if(!p){on=false;continue}
+    on?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]); on=true;
+  }
+}
+function drawField(g,pr,W,H,fence){
+  const wedge=(d,fill)=>{const home=pr([0,0,0]);
+    g.beginPath(); let started=false;
+    if(home){g.moveTo(home[0],home[1]);started=true}
+    for(let a=-45;a<=45;a+=2){const p=pr([Math.sin(a*Math.PI/180)*d,0,Math.cos(a*Math.PI/180)*d]);
+      if(p){started?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]);started=true}}
+    g.closePath(); g.fillStyle=fill; g.fill();};
+  wedge(fence,'#2b6136');
+  wedge(115,'#8f6340');
+  const dia=[[0,0,0],[63.6,0,63.6],[0,0,127],[-63.6,0,63.6]].map(pr);
+  if(dia.every(Boolean)){g.beginPath();g.moveTo(dia[0][0],dia[0][1]);
+    dia.slice(1).forEach(p=>g.lineTo(p[0],p[1]));g.closePath();g.fillStyle='#357842';g.fill();}
+  for(let d=100;d<fence;d+=100){arcPath(g,pr,d);g.strokeStyle='rgba(255,255,255,.18)';g.lineWidth=1;g.stroke();}
+  arcPath(g,pr,fence); g.strokeStyle='rgba(255,255,255,.7)'; g.lineWidth=2; g.stroke();
+  [-45,45].forEach(a=>{
+    const p1=pr([0,0,0]), p2=pr([Math.sin(a*Math.PI/180)*fence,0,Math.cos(a*Math.PI/180)*fence]);
+    if(p1&&p2){g.beginPath();g.moveTo(p1[0],p1[1]);g.lineTo(p2[0],p2[1]);
+      g.strokeStyle='rgba(255,255,255,.85)';g.lineWidth=1.5;g.stroke();}});
+}
+const FLIGHTS={};
+let flightRAF=null;
+function flightCard(balls,id,title){
+  const usable=(balls||[]).filter(b=>trajectory(b,4));
+  if(!usable.length)return'';
+  const prev=FLIGHTS[id]||{};
+  FLIGHTS[id]={balls:usable,cam:prev.cam||'behind',t:0,speed:prev.speed||1,playing:true,only:null};
+  return '<div class="card"><h2>'+title+'</h2>'+
+    '<div class="hint">Flight rebuilt from exit velo, launch angle, spray direction and the projected distance</div>'+
+    '<canvas id="'+id+'" width="760" height="430" style="width:100%;max-width:760px;border-radius:12px;background:#0d1526;display:block;margin:12px auto 0"></canvas>'+
+    '<div class="row" style="margin-top:10px;align-items:center">'+
+      '<button class="btn sec" onclick="flightPlay(\''+id+'\')">Replay</button>'+
+      '<div class="seg">'+Object.keys(CAMS).map(c=>'<button id="'+id+'_cam_'+c+'" class="'+(FLIGHTS[id].cam===c?'on':'')+'" onclick="flightCam(\''+id+'\',\''+c+'\')">'+CAMS[c].n+'</button>').join('')+'</div>'+
+      '<select class="inline" style="max-width:200px" onchange="flightOnly(\''+id+'\',this.value)">'+
+        '<option value="">All '+usable.length+' balls</option>'+
+        usable.map((b,i)=>'<option value="'+i+'">#'+(i+1)+' · '+(+b.ev).toFixed(1)+' mph · '+Math.round(num(b.dist)||0)+' ft</option>').join('')+
+      '</select>'+
+      '<button class="btn ghost" id="'+id+'_rec" onclick="flightRecord(\''+id+'\')">Save video</button>'+
+      '<span id="'+id+'_recmsg" class="hint"></span>'+
+    '</div></div>';
+}
+function flightCam(id,c){const f=FLIGHTS[id]; if(!f)return; f.cam=c;
+  Object.keys(CAMS).forEach(k=>{const el=document.getElementById(id+'_cam_'+k); if(el)el.className=(k===c?'on':'')});}
+function flightOnly(id,v){const f=FLIGHTS[id]; if(!f)return; f.only=(v===''?null:+v); f.t=0; f.playing=true;}
+function flightPlay(id){const f=FLIGHTS[id]; if(!f)return; f.t=0; f.playing=true;}
+function flightSetup(f){
+  f.tr=f.balls.map(b=>({t:trajectory(b,48),col:ballCol(b)})).filter(x=>x.t);
+  f.fence=Math.max(200,Math.ceil(Math.max.apply(null,f.tr.map(x=>x.t.dist))*1.3/10)*10);
+  f.span=Math.max.apply(null,f.tr.map(x=>x.t.tf))+0.4;
+}
+function flightFrame(id,dt){
+  const cv=document.getElementById(id), f=FLIGHTS[id];
+  if(!cv||!f)return;
+  if(!f.tr)flightSetup(f);
+  const g=cv.getContext('2d'), W=cv.width, H=cv.height;
+  if(f.playing)f.t+=dt*f.speed;
+  const shown=(f.only==null?f.tr:[f.tr[f.only]]).filter(Boolean);
+  const stagger=f.only==null?Math.min(0.45,2.2/Math.max(1,shown.length)):0;
+  const total=f.span+stagger*shown.length;
+  if(f.t>total+1.4)f.t=0;
+  const grd=g.createLinearGradient(0,0,0,H); grd.addColorStop(0,'#16233c'); grd.addColorStop(1,'#0d1526');
+  g.fillStyle=grd; g.fillRect(0,0,W,H);
+  const pr=projector(CAMS[f.cam],W,H);
+  drawField(g,pr,W,H,f.fence);
+  shown.forEach((b,i)=>{
+    const tt=f.t-i*stagger;
+    if(tt<=0)return;
+    const prog=Math.min(1,tt/b.t.tf), n=b.t.pts.length, upto=Math.max(1,Math.round(prog*(n-1)));
+    g.beginPath(); let on=false;
+    for(let k=0;k<=upto;k++){const p=pr(b.t.pts[k]); if(!p){on=false;continue}
+      on?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]); on=true;}
+    g.strokeStyle=b.col; g.globalAlpha=prog>=1?0.5:0.9; g.lineWidth=2; g.stroke(); g.globalAlpha=1;
+    const head=pr(b.t.pts[upto]), gp=b.t.pts[upto], sh=pr([gp[0],0,gp[2]]);
+    if(sh&&prog<1){g.beginPath();g.ellipse(sh[0],sh[1],Math.max(2,6-sh[2]/110),Math.max(1,2.4-sh[2]/320),0,0,7);
+      g.fillStyle='rgba(0,0,0,.35)';g.fill();}
+    if(head){
+      if(prog<1){
+        g.beginPath(); g.arc(head[0],head[1],Math.max(4,11-head[2]/80),0,7); g.strokeStyle=b.col; g.lineWidth=1.5; g.stroke();
+        g.beginPath(); g.arc(head[0],head[1],Math.max(2.5,7-head[2]/90),0,7); g.fillStyle='#fff'; g.fill();
+      } else {
+        g.beginPath(); g.arc(head[0],head[1],3.5,0,7); g.fillStyle=b.col; g.fill();
+      }
+    }
+  });
+  g.fillStyle='rgba(233,238,251,.7)'; g.font='12px system-ui,sans-serif';
+  g.fillText(CAMS[f.cam].n+' · fence '+f.fence+' ft',12,20);
+}
+function initFlights(){
+  if(flightRAF){cancelAnimationFrame(flightRAF);flightRAF=null}
+  Object.keys(FLIGHTS).forEach(id=>{if(!document.getElementById(id))delete FLIGHTS[id]});
+  if(!Object.keys(FLIGHTS).length)return;
+  let last=performance.now();
+  const loop=now=>{
+    const dt=Math.min(0.05,(now-last)/1000); last=now;
+    Object.keys(FLIGHTS).forEach(id=>flightFrame(id,dt));
+    flightRAF=requestAnimationFrame(loop);
+  };
+  flightRAF=requestAnimationFrame(loop);
+}
+/* Save the animation as a video file. MediaRecorder off a canvas stream — supported in
+   current Chrome, Edge, Firefox and Safari 14.1+; the button says so when it isn't. */
+function flightRecord(id){
+  const cv=document.getElementById(id), f=FLIGHTS[id], msg=document.getElementById(id+'_recmsg');
+  if(!cv||!f)return;
+  if(typeof MediaRecorder==='undefined'||!cv.captureStream){
+    if(msg)msg.textContent='This browser can’t record canvas video — screen-record instead.';return;}
+  const types=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'];
+  const mime=types.find(t=>MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
+  if(!mime){if(msg)msg.textContent='No video format this browser can write.';return}
+  const btn=document.getElementById(id+'_rec');
+  let rec; try{rec=new MediaRecorder(cv.captureStream(30),{mimeType:mime})}
+  catch(e){if(msg)msg.textContent='Recording failed to start.';return}
+  const chunks=[];
+  rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  rec.onstop=()=>{
+    const ext=mime.indexOf('mp4')>=0?'mp4':'webm';
+    dl('hittrax-flight-'+new Date().toISOString().slice(0,10)+'.'+ext,new Blob(chunks,{type:mime}),mime);
+    if(btn){btn.textContent='Save video';btn.disabled=false}
+    if(msg)msg.textContent='Saved.';
+  };
+  f.t=0; f.playing=true;
+  const shown=(f.only==null?(f.tr||[]):[1]).length||1;
+  const secs=Math.min(30,(f.span||3)+0.45*shown+1.2);
+  rec.start();
+  if(btn){btn.textContent='Recording…';btn.disabled=true}
+  if(msg)msg.textContent='Capturing '+secs.toFixed(0)+'s…';
+  setTimeout(()=>{try{rec.stop()}catch(e){}},secs*1000);
+}
+
 /* ---------- strike-zone heat map ----------
    HitTrax splits the plate into 13 sections: 1-9 are the strike zone (row-major, top-left to
    bottom-right from the catcher's view) and 10-13 are the four out-of-zone quadrants. The
@@ -1237,6 +1417,7 @@ function render(){
     `<span class="chip" style="cursor:pointer" onclick="go('data')">Set up player</span>`;
   document.getElementById('view').innerHTML=({dash:vDash,log:vLog,trends:vTrends,sessions:vSessions,report:vReport,data:vData})[TAB]();
   if(TAB==='log')initLog();
+  initFlights();
 }
 function go(t){TAB=t;render();window.scrollTo(0,0)}
 function setKind(k){
@@ -1312,6 +1493,7 @@ function vDash(){
   ${cat?'':gapsCard(last.balls,last)}
   ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
   ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
+  ${cat?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
   ${cat?'':plateCard(last.balls||[])}
   ${cat?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
@@ -1887,6 +2069,7 @@ function openSession(id){
    ${balls.some(b=>num(b.zone)!=null)?`<div style="margin-top:18px"><label>Strike-zone heat map — ${ZMETRICS[ZM].toLowerCase()}</label>${zoneMap(balls)}${zoneSplit(balls)}</div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Launch angle vs exit velo</label>${scatterLAEV(balls,HH())}</div>`:''}
    ${balls.some(b=>landing(b))?`<div style="margin-top:18px"><label>Spray chart</label>${fieldChart(balls)}</div>`:''}
+   ${flightCard(balls,'flt_dlg','Flight paths').replace('<div class="card">','<div style="margin-top:18px">')}
    ${s.notes?`<div style="margin-top:16px"><label>Notes</label><div style="background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px">${esc(s.notes)}</div></div>`:''}
    ${balls.length?`<div style="margin-top:18px"><label>Batted balls (${balls.length})</label><div class="scroll" style="max-height:240px">
      <table class="mono"><thead><tr><th>#</th><th>EV</th><th>LA</th><th>Dist</th><th>Type</th><th>Result</th></tr></thead><tbody>`+
@@ -1894,6 +2077,7 @@ function openSession(id){
        <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${((b.btype||bucket(b.la))||'—').toUpperCase()}</td><td>${esc(b.result||'—')}</td></tr>`).join('')+
      `</tbody></table></div></div>`:''}
    ${roundsTable(s,id)}`;
+  initFlights();
   if(!dlg.open)dlg.showModal();   // re-rendering an open breakdown must not re-show it
 }
 // Rounds on the same date can come from different pitchers — the pitch speed and exit velo
@@ -2046,7 +2230,8 @@ function savePlayer(){
   save(); render(); alert('Saved.');
 }
 function dl(name,text,type){
-  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type}));
+  const blob=(text instanceof Blob)?text:new Blob([text],{type});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
   a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
 function expJSON(){dl(`hittrax-backup-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(DB,null,2),'application/json')}

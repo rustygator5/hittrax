@@ -74,6 +74,20 @@ Definitions: GB <10 deg, LD 10-25, FB 25-50, PU >50. Sweet spot = 8-32 deg.
 Hard hit = at or above the threshold on the Player & Data tab (defaults to the age group's
 "good" floor). Barrel = hard hit AND 8-32 deg.
 
+### 3D flight paths (and video)
+Each batted ball's flight is rebuilt and animated over a 3D field: projectile motion at the
+measured exit velocity and launch angle, launched along the spray direction from the measured
+contact height, with the horizontal scaled so the ball lands exactly on HitTrax's projected
+distance (that scale stands in for drag). Three cameras - behind the plate, third-base side,
+high home - plus a ball picker to isolate one swing, and ground shadows for depth. The park is
+drawn to fit the hitter, so a 12U round fills the frame instead of rattling around a 320 ft field.
+
+**Save video** records the canvas to a real video file (WebM/MP4 via MediaRecorder) and downloads
+it - a couple of seconds of animation is about 100 KB. Browsers without canvas recording say so
+instead of failing silently.
+
+Rendered with a hand-rolled pinhole camera on a plain canvas: no 3D library, works offline.
+
 ### Spray chart on a real field
 Balls in play are plotted on a drawn field - dirt infield, foul lines, fence arc with distance
 rings - using the export's own `Spray Chart X/Z` landing coordinates when present, and distance
