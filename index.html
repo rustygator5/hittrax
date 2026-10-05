@@ -172,10 +172,101 @@ const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:nu
   files:{},parserV:PARSER_V,deleted:[],goals:[],updatedAt:0});
 let DB=blank();
 function lsKey(){return session?KEY+'.data.'+session.user.id:KEY}
+/* ============================== input hygiene ==============================
+   Data reaches the app from four places: import links, backup files, the cloud, and this
+   browser's own storage. All of it is rendered with innerHTML, on an origin shared with the
+   hub and the budget app — so every session is rebuilt from a whitelist of fields with known
+   types before it is kept. Anything that isn't a plain number, a known word, or a short piece
+   of text is dropped, never passed through. */
+// toISOString() is UTC: after 8 pm in Florida it already says tomorrow
+function localDate(d){d=d||new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+const SAFE_ID=/^[A-Za-z0-9_-]{1,64}$/;
+const SAFE_DATE=/^\d{4}-\d{2}-\d{2}$/;
+const finite=v=>(typeof v==='number'&&isFinite(v))?v:(typeof v==='string'&&v.trim()!==''&&isFinite(+v)?+v:undefined);
+const shortText=(v,max)=>typeof v==='string'?v.slice(0,max):undefined;
+const oneOf=(v,list)=>list.includes(v)?v:undefined;
+const BALL_NUM=['ev','la','dist','horiz','pitch','zone','poix','poiy','poiz','sprayx','sprayz','szbot','sztop','szwidth'];
+const THROW_NUM=['pop','exch','velo','miss','diff','pitch'];
+function cleanRow(r,nums,extra){
+  if(!r||typeof r!=='object')return null;
+  const o={};
+  nums.forEach(k=>{const v=finite(r[k]); if(v!==undefined)o[k]=v});
+  if(SAFE_DATE.test(r.date||''))o.date=r.date;
+  ['user','level','poi','base'].forEach(k=>{const v=shortText(r[k],60); if(v!==undefined)o[k]=v});
+  extra(o,r);
+  return o;
+}
+function cleanBall(r){return cleanRow(r,BALL_NUM,(o,r)=>{
+  const res=oneOf(r.result,['single','double','triple','hr','out','error','foul']); if(res)o.result=res;
+  const bt=oneOf(r.btype,['gb','ld','fb','pu']); if(bt)o.btype=bt;
+})}
+function cleanThrow(r){return cleanRow(r,THROW_NUM,(o,r)=>{
+  const oc=oneOf(r.outcome,['out','safe']); if(oc)o.outcome=oc;
+  if(r.ontarget===true||r.ontarget===false)o.ontarget=r.ontarget;
+})}
+function cleanSummary(s){
+  const o={};
+  if(s&&typeof s==='object')Object.keys(s).forEach(k=>{
+    if(!/^[A-Za-z0-9_]{1,24}$/.test(k))return;
+    const v=finite(s[k]); if(v!==undefined)o[k]=v;
+  });
+  return o;
+}
+function sanitizeSession(s){
+  if(!s||typeof s!=='object'||!SAFE_DATE.test(s.date||''))return null;
+  const o={
+    id:SAFE_ID.test(s.id||'')?s.id:uid(),
+    kind:oneOf(s.kind,['hitting','catching','games'])||'hitting',
+    date:s.date,
+    mode:oneOf(s.mode,['detail','summary','game','mixed'])||'summary',
+    mtime:finite(s.mtime)||1,
+    summary:cleanSummary(s.summary),
+  };
+  ['type','location'].forEach(k=>{const v=shortText(s[k],120); if(v)o[k]=v});
+  const notes=shortText(s.notes,4000); if(notes)o.notes=notes;
+  const grp=oneOf(s.group,['in','solo','out']); if(grp)o.group=grp;
+  const pitch=finite(s.pitch); if(pitch!==undefined)o.pitch=pitch;
+  const hh=finite(s.hh); if(hh!==undefined&&hh>10&&hh<150)o.hh=hh;
+  if(Array.isArray(s.balls))o.balls=s.balls.slice(0,5000).map(cleanBall).filter(Boolean);
+  if(Array.isArray(s.throws))o.throws=s.throws.slice(0,5000).map(cleanThrow).filter(Boolean);
+  if(s.src&&SAFE_ID.test(s.src.f||''))o.src={f:s.src.f,date:SAFE_DATE.test(s.src.date||'')?s.src.date:null};
+  return o;
+}
+function sanitizeSettings(set){
+  const o={};
+  if(!set||typeof set!=='object')return o;
+  const hh=finite(set.hardHit); if(hh!==undefined&&hh>10&&hh<150)o.hardHit=hh;
+  if(set.hardHit===null)o.hardHit=null;
+  const zc=oneOf(set.zoneCal,['none','mirror','left','right']); if(zc)o.zoneCal=zc;
+  return o;
+}
+function sanitizeDoc(d){
+  const out=Object.assign(blank(),{});
+  if(!d||typeof d!=='object')return out;
+  out.sessions=(Array.isArray(d.sessions)?d.sessions:[]).map(sanitizeSession).filter(Boolean);
+  out.deleted=(Array.isArray(d.deleted)?d.deleted:[])
+    .filter(x=>x&&SAFE_ID.test(x.id||''))
+    .map(x=>({id:x.id,ts:finite(x.ts)||0}));
+  const p=d.player||{};
+  out.player={name:shortText(p.name,80)||'',age:(finite(p.age)!==undefined&&+p.age>4&&+p.age<60)?String(+p.age):'',
+    level:shortText(p.level,60)||'',bats:oneOf(p.bats,['R','L','S'])||'R'};
+  out.settings=sanitizeSettings(d.settings);
+  out.files={};
+  if(d.files&&typeof d.files==='object')Object.keys(d.files).forEach(id=>{
+    const f=d.files[id];
+    if(SAFE_ID.test(id)&&f&&typeof f.text==='string'&&f.text.length<=MAXFILE)
+      out.files[id]={name:shortText(f.name,120)||'file',text:f.text,ts:finite(f.ts)||0};
+  });
+  out.parserV=finite(d.parserV)||0;
+  out.updatedAt=finite(d.updatedAt)||0;
+  return out;
+}
+
 function load(){
   // signed in: prefer this account's cache, but adopt anything logged before signing in
   const keys=session?[KEY+'.data.'+session.user.id,KEY]:[KEY];
-  for(const k of keys){try{const r=localStorage.getItem(k); if(r)return Object.assign(blank(),JSON.parse(r))}catch(e){}}
+  for(const k of keys){try{const r=localStorage.getItem(k); if(r)return sanitizeDoc(JSON.parse(r))}catch(e){}}
   return blank();
 }
 function saveLocal(){try{localStorage.setItem(lsKey(),JSON.stringify(DB))}catch(e){alert('Could not save: '+e.message)}}
@@ -307,7 +398,7 @@ async function pullMerge(initial){
   if(row===undefined){setSync('offline');return}
   if(row==='nosetup'){setSync('setup');return}
   if(row&&row.data&&row.data.sessions){
-    const merged=mergeDocs(DB,row.data);
+    const merged=mergeDocs(DB,sanitizeDoc(row.data));
     const changed=JSON.stringify(merged)!==JSON.stringify(DB);
     if(changed&&!busy()){DB=merged;saveLocal();render()}
     else if(changed&&initial){DB=merged;saveLocal()}
@@ -332,9 +423,11 @@ function readImportLink(){
   try{
     const json=decodeURIComponent(escape(atob(m[1].replace(/-/g,'+').replace(/_/g,'/'))));
     const d=JSON.parse(json);
-    const list=Array.isArray(d)?d:((d&&d.sessions)||[]);
-    const set=(!Array.isArray(d)&&d&&d.settings)||null;
-    return (list.length||set)?{list,set}:null;
+    const raw=Array.isArray(d)?d:((d&&Array.isArray(d.sessions))?d.sessions:[]);
+    const list=raw.map(sanitizeSession).filter(Boolean);       // what you confirm is what gets kept
+    const set=(!Array.isArray(d)&&d&&d.settings)?sanitizeSettings(d.settings):null;
+    const hasSet=set&&Object.keys(set).length;
+    return (list.length||hasSet)?{list,set:hasSet?set:null}:null;
   }catch(e){return null}
 }
 function offerImport(payload){
@@ -364,7 +457,7 @@ function acceptImport(){
   const now=Date.now(), p=PENDING_IMPORT||{};
   if(p.set)Object.assign(DB.settings,p.set);
   (p.list||[]).forEach((s,i)=>{
-    DB.sessions.push({...s,id:uid(),kind:s.kind||'games',mode:s.mode||'game',mtime:now+i});
+    DB.sessions.push({...s,id:uid(),mtime:now+i});
   });
   const wasGames=(p.list||[]).some(s=>(s.kind||'games')==='games');
   PENDING_IMPORT=null; save(); clearHash();
@@ -648,7 +741,7 @@ function sessionStats(s){
     if(s.mode!=='mixed'&&s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
     return s.summary||{};
   }
-  if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,HH()); if(c)return c;}
+  if(s.mode==='detail'&&s.balls&&s.balls.length){const c=computeFromBalls(s.balls,s.hh||HH()); if(c)return c;}
   return s.summary||{};
 }
 const rawSorted=(kind)=>DB.sessions.filter(s=>kindOf(s)===(kind||VIEWKIND))
@@ -686,6 +779,9 @@ function setGroup(id,val){
     || list.find(e=>e.date===raw.date);
   target?openSession(target.id):dlg.close();
 }
+// rounds on one date are scored at the threshold they were logged with (normally all the same)
+function dayHH(parts){const p=parts.find(x=>x.hh); return p?p.hh:HH()}
+const dayHHof=s=>s.parts?dayHH(s.parts):(s.hh||HH());
 function dayOf(parts,kind){
   const p0=parts[0];
   if(parts.length===1)return Object.assign({},p0,{parts:[p0],dayId:p0.id});
@@ -701,7 +797,7 @@ function dayOf(parts,kind){
     balls, throws};
   // every upload has raw rows -> recompute exactly; otherwise fold the typed summaries together
   day.summary=kind==='games'?sumGames(parts.map(sessionStats))
-    :(allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,HH()))
+    :(allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,dayHH(parts)))
              :mergeSummaries(parts.map(sessionStats),kind));
   const pitches=parts.map(s=>num(s.pitch)).filter(v=>v>0);
   day.pitch=allRows?avgPitch(rows):(pitches.length?Math.round(pitches.reduce((a,c)=>a+c,0)/pitches.length):null);
@@ -724,16 +820,46 @@ function mergeSummaries(list,kind){
 const sorted=(kind)=>daySessions(kind);
 const countOf=kind=>daySessions(kind).length;
 const findSession=id=>DB.sessions.find(s=>s.id===id)||sorted('hitting').concat(sorted('catching')).find(s=>s.id===id);
-function series(k){return sorted().map(s=>({date:s.date,id:s.id,v:num(sessionStats(s)[k])})).filter(p=>p.v!=null);}
+// sample size behind a session's numbers: balls in play, clean throws, or plate appearances
+function sampleN(s,st){st=st||sessionStats(s);
+  const k=kindOf(s); return num(k==='catching'?st.throws:(k==='games'?st.pa:st.swings))||0}
+// metrics that are a single best event can stand on one ball; averages and rates need a sample
+const SINGLE=['maxEV','maxDist','bestPop','bestExch','maxVelo','h','xbh','tb','rbi','r','sb','hhb','pa','ab','swings','throws'];
+const MIN_N={hitting:10,catching:8,games:3};
+function series(k){
+  if(VIEWKIND==='games'){
+    // one game is 3-5 plate appearances, so a game's own AVG swings .000-1.000. The trend is the
+    // season to date after each game; counting stats become running totals.
+    const S=sorted('games'), out=[]; let acc=[];
+    S.forEach(s=>{acc.push(sessionStats(s)); const tot=sumGames(acc), v=num(tot[k]);
+      if(v!=null)out.push({date:s.date,id:s.id,v,n:num(tot.pa)||0})});
+    return out;
+  }
+  return sorted().map(s=>{const st=sessionStats(s); return {date:s.date,id:s.id,v:num(st[k]),n:sampleN(s,st)}})
+    .filter(p=>p.v!=null);
+}
 function num(v){return (v===''||v==null||isNaN(v))?null:+v;}
 function fmt(k,v){ if(v==null)return'—'; const m=MK[k]; const s=(+v).toFixed(m.d);
   return m.d===3?s.replace(/^0/,''):s; }
-function best(k){const S=series(k); if(!S.length)return null; const dir=MK[k].dir;
+function best(k){
+  // a 1-for-1 game or a 3-ball session is not a personal best
+  let S;
+  if(VIEWKIND==='games'){
+    if(!SINGLE.includes(k))return null;                               // rate stats: season line only
+    S=sorted('games').map(s=>{const st=sessionStats(s); return {date:s.date,id:s.id,v:num(st[k])}}).filter(p=>p.v!=null);
+  } else {
+    S=series(k);
+    if(!SINGLE.includes(k))S=S.filter(p=>p.n>=MIN_N[VIEWKIND]);
+  }
+  if(!S.length)return null; const dir=MK[k].dir;
   if(dir==='down')return S.reduce((a,c)=>c.v<a.v?c:a);
   if(dir==='up')return S.reduce((a,c)=>c.v>a.v?c:a); return null;}
 function delta(k,i){ // change vs previous session that has this metric
   const S=series(k); const idx=S.findIndex(p=>p.id===i);
-  if(idx<1)return null; return S[idx].v-S[idx-1].v;
+  if(idx<1)return null;
+  const min=MIN_N[VIEWKIND]||0;
+  if(VIEWKIND!=='games'&&!SINGLE.includes(k)&&(S[idx].n<min||S[idx-1].n<min))return undefined;   // too few to compare
+  return S[idx].v-S[idx-1].v;
 }
 function dirClass(k,d){ if(d==null)return'flat'; const dir=MK[k].dir;
   if(+(+d).toFixed(decimals(k))===0)return'flat';   // rounds to nothing at the shown precision
@@ -743,6 +869,8 @@ function decimals(k){const m=MK[k]; return m.d===3?3:(m.u==='s'?2:(Math.abs(1)<1
 function dstr(k,d){ if(d==null)return''; const v=+(+d).toFixed(decimals(k));
   return (v>0?'+':'')+v.toFixed(decimals(k)); }
 function rolling(S,w){return S.map((p,i)=>{const sl=S.slice(Math.max(0,i-w+1),i+1);
+  const wt=sl.reduce((a,c)=>a+(c.n||1),0);
+  if(sl.every(c=>c.n))return {date:p.date,v:sl.reduce((a,c)=>a+c.v*c.n,0)/wt};
   return {date:p.date,v:sl.reduce((a,c)=>a+c.v,0)/sl.length}});}
 
 /* ============================== paste parser ============================== */
@@ -939,7 +1067,7 @@ function parseThrows(txt){
 }
 
 /* ============================== charts (inline SVG) ============================== */
-function esc(s){return (''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function esc(s){return (''+s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function lineChart(S,k,opt={}){
   if(S.length<1)return '<div class="empty">Not enough data yet.</div>';
   const W=720,H=250,P={l:44,r:14,t:16,b:30};
@@ -960,9 +1088,12 @@ function lineChart(S,k,opt={}){
   if(opt.band){const y1=y(Math.min(opt.band[1],hi)),y2=y(Math.max(opt.band[0],lo));
     bandEl=`<rect x="${P.l}" y="${y1.toFixed(1)}" width="${W-P.l-P.r}" height="${Math.max(0,y2-y1).toFixed(1)}" fill="rgba(47,191,113,.10)"/>`;}
   let roll='';
-  if(S.length>=3){const R=rolling(S,3);
+  if(S.length>=3&&VIEWKIND!=='games'){const R=rolling(S,3);      // season-to-date is already smoothed
     roll=`<path d="${R.map((p,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(p.v).toFixed(1)).join(' ')}" fill="none" stroke="#3d6df0" stroke-width="2" stroke-dasharray="5 4" opacity=".85"/>`;}
-  const dots=pts.map((p,i)=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.6" fill="#FA4616" stroke="#0b1220" stroke-width="1.5"><title>${esc(S[i].date)} — ${fmt(k,S[i].v)}</title></circle>`).join('');
+  const maxN=Math.max(1,...S.map(p=>p.n||0));
+  const dots=pts.map((p,i)=>{const n=S[i].n||0, small=n&&n<(MIN_N[VIEWKIND]||0)&&!SINGLE.includes(k);
+    const r=n?Math.max(3,Math.min(7,3+4*Math.sqrt(n/maxN))):3.6;
+    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${r.toFixed(1)}" fill="${small?'#0d1526':'#FA4616'}" stroke="${small?'#FA4616':'#0b1220'}" stroke-width="1.5"><title>${esc(S[i].date)} — ${fmt(k,S[i].v)}${n?` · ${n} ${VIEWKIND==='games'?'PA to date':(VIEWKIND==='catching'?'throws':'balls')}`:''}${small?' (small sample)':''}</title></circle>`}).join('');
   const step=Math.ceil(S.length/6);
   const xl=S.map((p,i)=>i%step===0||i===S.length-1?`<text x="${x(i).toFixed(1)}" y="${H-9}" fill="#6c7fa5" font-size="10.5" text-anchor="middle">${p.date.slice(5)}</text>`:'').join('');
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet">
@@ -1496,7 +1627,7 @@ function flightRecord(id){
   rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
   rec.onstop=()=>{
     const ext=mime.indexOf('mp4')>=0?'mp4':'webm';
-    dl('hittrax-flight-'+new Date().toISOString().slice(0,10)+'.'+ext,new Blob(chunks,{type:mime}),mime);
+    dl('hittrax-flight-'+localDate()+'.'+ext,new Blob(chunks,{type:mime}),mime);
     if(btn){btn.textContent='Save video';btn.disabled=false}
     if(msg)msg.textContent='Saved.';
   };
@@ -1955,7 +2086,7 @@ function dashPicker(){
     const what=e.solo?'Separate round':((e.parts&&e.parts.length>1)?`Grouped day · ${e.parts.length} rounds`:'Round');
     return `${what}${n?` · ${n} ${kindOf(e)==='catching'?'throws':'balls'}`:''}`};
   return `<div style="margin:10px 0 2px"><div class="seg" style="flex-wrap:wrap">
-    ${E.map(e=>`<button class="${e.id===sel.id?'on':''}" onclick="DASHSEL='${e.id}';render()">${label(e)}</button>`).join('')}
+    ${E.map(e=>`<button class="${e.id===sel.id?'on':''}" onclick="DASHSEL='${esc(e.id)}';render()">${label(e)}</button>`).join('')}
   </div></div>`;
 }
 function syncBanner(){
@@ -1999,7 +2130,9 @@ function vDash(){
     const isPB=bs&&bs.id===last.id&&S.length>1;
     return `<div class="tile"><div class="k">${MK[k].n}${isPB?'<span class="pb">PB</span>':''}</div>
       <div class="v">${fmt(k,v)}<small>${MK[k].u}</small></div>
-      <div class="d ${dirClass(k,d)}">${d==null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'}</div></div>`;
+      <div class="d ${dirClass(k,d)}">${gm?'<span class="flat">this game</span>'
+        :(d===undefined?'<span class="flat">too few to compare</span>'
+        :(d===null?'<span class="flat">first reading</span>':dstr(k,d)+' vs last'))}</div></div>`;
   }).join('');
   return syncBanner()+backfillBanner()+`
   <div class="card">
@@ -2007,7 +2140,7 @@ function vDash(){
       <div><h2>Latest session${last.solo?' <span class="chip a">separate round</span>'
           :((last.parts&&last.parts.length>1)?` <span class="chip">${last.parts.length} rounds</span>`:'')}</h2>
         <div class="hint">${esc(last.date)}${last.type?' · '+esc(last.type):''}${last.location?' · '+esc(last.location):''}</div></div>
-      <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${last.id}')">Details</button>
+      <button class="btn sec" style="margin-left:auto;padding:7px 13px;font-size:13px" onclick="openSession('${esc(last.id)}')">Details</button>
     </div>
     ${dashPicker()}
     <div class="tiles">${tiles}</div>
@@ -2026,8 +2159,9 @@ function vDash(){
   ${cat?throwBarsCard(last.throws||[]):''}
   ${(cat||gm)?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
-  <div class="card"><h2>${MK[TRENDDEF[VIEWKIND]].n} trend</h2>
-    <div class="hint">Solid = each ${gm?'game':'session'} · dashed blue = 3-${gm?'game':'session'} rolling average</div>
+  <div class="card"><h2>${MK[TRENDDEF[VIEWKIND]].n} ${gm?'— season to date':'trend'}</h2>
+    <div class="hint">${gm?'Season line after each game — one game is too few plate appearances to read on its own'
+      :'Each dot is a session, sized by how many balls it holds · dashed blue = rolling average weighted by sample size'}</div>
     ${lineChart(series(TRENDDEF[VIEWKIND]),TRENDDEF[VIEWKIND])}
     <div style="margin-top:10px"><button class="btn ghost" onclick="go('trends')">All trends</button></div>
   </div>
@@ -2102,54 +2236,141 @@ function benchCard(st,b){
       <span><i style="background:rgba(47,191,113,.85)"></i>Elite ${b.elite}+</span></div>
   </div>`;
 }
-function coachCard(S){
-  if(S.length<2)return `<div class="card note">Log a second session and this panel starts calling out what moved —
-   and what to work on next.</div>`;
-  const cat=VIEWKIND==='catching';
-  const good=[],work=[];
-  (cat?['bestPop','avgPop','avgExch','maxVelo','avgVelo','onTarget','outPct']
-      :['maxEV','avgEV','hha','sweet','ld','gb','avgLA','barrel']).forEach(k=>{
-    const Sr=series(k); if(Sr.length<3)return;
-    const half=Math.max(1,Math.floor(Sr.length/2));
-    const early=Sr.slice(0,half), late=Sr.slice(-half);
-    const a=early.reduce((x,c)=>x+c.v,0)/early.length, b2=late.reduce((x,c)=>x+c.v,0)/late.length;
-    const floor=MK[k].u==='%'?2:(MK[k].u==='s'?0.03:0.6);
-    const d=b2-a; if(Math.abs(d)<floor)return;
-    const cls=dirClass(k,d);
-    const txt=`<b>${MK[k].n}</b> ${d>0?'up':'down'} ${Math.abs(d).toFixed(MK[k].d)}${MK[k].u} (first half ${fmt(k,a)} → recent ${fmt(k,b2)})`;
-    (cls==='up'?good:work).push(txt);
+/* ============================== what's moving ==============================
+   One session of 16 swings has an exit-velo standard error of ~2 mph, so two sessions have to
+   differ by ~6 mph before the gap means anything. Comparing session averages with a fixed floor
+   called noise "progress". Instead: pool the actual batted balls (or clean throws, or plate
+   appearances), compare the most recent window with the one before it, and only call a change
+   when it clears a 95% bar. Everything else is reported honestly as "inside the noise". */
+const Z95=1.96;
+const meanVar=a=>{const n=a.length; if(n<2)return null; const m=a.reduce((x,c)=>x+c,0)/n;
+  return {m,v:a.reduce((x,c)=>x+(c-m)*(c-m),0)/(n-1),n}};
+function testMean(a,b){            // Welch: is the recent mean really different?
+  const A=meanVar(a), B=meanVar(b); if(!A||!B)return null;
+  const se=Math.sqrt(A.v/A.n+B.v/B.n); if(!(se>0))return null;
+  return {from:A.m,to:B.m,diff:B.m-A.m,need:Z95*se,sig:Math.abs(B.m-A.m)>=Z95*se,n1:A.n,n2:B.n};
+}
+function testProp(x1,n1,x2,n2){    // two-proportion z
+  if(n1<5||n2<5)return null;
+  const p1=x1/n1, p2=x2/n2, p=(x1+x2)/(n1+n2);
+  const se=Math.sqrt(p*(1-p)*(1/n1+1/n2)); if(!(se>0))return null;
+  return {from:p1*100,to:p2*100,diff:(p2-p1)*100,need:Z95*se*100,sig:Math.abs(p2-p1)>=Z95*se,n1,n2};
+}
+// pooled rows in date order, each carrying the threshold its own session was scored at
+function pooledRows(kind){
+  const rows=[];
+  sorted(kind).forEach(s=>{
+    if(kind==='hitting')(s.balls||[]).forEach(b=>{if(num(b.ev)>0)rows.push({...b,_hh:dayHHof(s)})});
+    if(kind==='catching')cleanThrows(s.throws).forEach(x=>rows.push(x));
   });
-  const st=sessionStats(S[S.length-1]);
+  return rows;
+}
+const MOVE_MIN={hitting:15,catching:10,games:15};
+function movingTests(kind){
+  if(kind==='games'){
+    // windows built from whole games, back from the latest, until each side holds enough PA
+    const G=sorted('games').map(s=>sessionStats(s));
+    const take=(list)=>{const out=[]; let pa=0;
+      while(list.length&&pa<MOVE_MIN.games){const g=list.pop(); out.push(g); pa+=num(g.pa)||0}
+      return pa>=MOVE_MIN.games?sumGames(out):null};
+    const rest=G.slice(), recent=take(rest), prior=take(rest);
+    if(!recent||!prior)return {need:`${MOVE_MIN.games} plate appearances on each side`,
+      have:G.reduce((a,g)=>a+(num(g.pa)||0),0),unit:'PA'};
+    const t=[];
+    const add=(k,label,x1,n1,x2,n2,dir)=>{const r=testProp(x1,n1,x2,n2); if(r)t.push({k,label,dir,...r,pct:true})};
+    add('avg','Batting average',prior.h||0,prior.ab||0,recent.h||0,recent.ab||0,'up');
+    add('kPct','Strikeout rate',prior.k||0,prior.pa||0,recent.k||0,recent.pa||0,'down');
+    add('bbPct','Walk rate',prior.bb||0,prior.pa||0,recent.bb||0,recent.pa||0,'up');
+    return {tests:t,window:`your last ${recent.pa} PA vs the ${prior.pa} before`};
+  }
+  const rows=pooledRows(kind), min=MOVE_MIN[kind];
+  const N=Math.min(60,Math.floor(rows.length/2));
+  if(N<min)return {need:`${min*2} ${kind==='catching'?'clean throws':'batted balls'}`,have:rows.length,
+    unit:kind==='catching'?'throws':'balls'};
+  const prior=rows.slice(rows.length-2*N,rows.length-N), recent=rows.slice(rows.length-N);
+  const t=[];
+  const mean=(k,label,f,dir)=>{const r=testMean(prior.map(f).filter(v=>v!=null),recent.map(f).filter(v=>v!=null));
+    if(r)t.push({k,label,dir,...r})};
+  const prop=(k,label,inSet,pred,dir)=>{const a=prior.filter(inSet), b=recent.filter(inSet);
+    const r=testProp(a.filter(pred).length,a.length,b.filter(pred).length,b.length);
+    if(r)t.push({k,label,dir,...r,pct:true})};
+  if(kind==='hitting'){
+    const la=x=>num(x.la), type=x=>x.btype||bucket(x.la);
+    mean('avgEV','Avg exit velo',x=>num(x.ev),'up');
+    prop('hha','Hard-hit rate',()=>true,x=>+x.ev>=x._hh,'up');
+    prop('sweet','Sweet-spot rate',x=>la(x)!=null,x=>la(x)>=8&&la(x)<=32,'up');
+    prop('ld','Line-drive rate',x=>type(x),x=>type(x)==='ld','up');
+    prop('gb','Ground-ball rate',x=>type(x),x=>type(x)==='gb','down');
+    mean('avgLA','Avg launch angle',la,'win');
+  } else {
+    mean('avgPop','Avg pop time',x=>num(x.pop),'down');
+    mean('avgExch','Avg exchange',x=>num(x.exch)>0.2?num(x.exch):null,'down');
+    mean('avgVelo','Avg arm strength',x=>num(x.velo)>15?num(x.velo):null,'up');
+    prop('outPct','Projected outs',x=>x.outcome,x=>x.outcome==='out','up');
+  }
+  return {tests:t,window:`your last ${N} ${kind==='catching'?'clean throws':'batted balls'} vs the ${N} before`,recent};
+}
+function moveLine(r){
+  const u=r.pct?'%':(MK[r.k]?MK[r.k].u:''), dec=r.pct?0:((MK[r.k]&&MK[r.k].u==='s')?2:1);
+  const f=v=>r.k==='avg'?avg3(v/100):v.toFixed(dec)+(u==='%'?'%':'');
+  const d=Math.abs(r.diff), dd=r.k==='avg'?avg3(d/100):d.toFixed(dec)+(u==='%'?' pts':(u==='°'?'°':' '+u));
+  return `<b>${r.label}</b> ${r.diff>0?'up':'down'} ${dd} (${f(r.from)} → ${f(r.to)})`;
+}
+function moveGood(r){
+  if(r.dir==='up')return r.diff>0;
+  if(r.dir==='down')return r.diff<0;
+  const mid=15; return Math.abs(r.to-mid)<Math.abs(r.from-mid);     // launch angle: toward 10-20°
+}
+function coachCard(S){
+  const kind=VIEWKIND, M2=movingTests(kind);
+  let body;
+  if(M2.need){
+    body=`<div class="hint">Not enough yet to separate real change from session-to-session wobble —
+      this needs ${M2.need} (you have ${M2.have} ${M2.unit}). Until then any "improvement" would be noise.</div>`;
+  } else {
+    const sig=M2.tests.filter(r=>r.sig), quiet=M2.tests.filter(r=>!r.sig);
+    const good=sig.filter(moveGood), work=sig.filter(r=>!moveGood(r));
+    body=`<div class="hint">${esc(M2.window)} — only changes that clear the noise are called</div>
+      ${good.length?'<div style="margin-top:6px"><span class="chip g">Improving</span><ul class="tight">'+good.map(r=>'<li>'+moveLine(r)+'</li>').join('')+'</ul></div>':''}
+      ${work.length?'<div style="margin-top:12px"><span class="chip a">Slipping</span><ul class="tight">'+work.map(r=>'<li>'+moveLine(r)+'</li>').join('')+'</ul></div>':''}
+      ${!sig.length?'<div class="hint" style="margin-top:6px">Nothing has moved beyond normal wobble yet.</div>':''}
+      ${quiet.length?`<details style="margin-top:12px"><summary class="hint" style="cursor:pointer">Inside the noise (${quiet.length})</summary>
+        <ul class="tight">${quiet.map(r=>`<li>${moveLine(r)} — would need about ±${r.pct?r.need.toFixed(0)+' pts':r.need.toFixed((MK[r.k]&&MK[r.k].u==='s')?2:1)+((MK[r.k]&&MK[r.k].u==='°')?'°':' '+(MK[r.k]?MK[r.k].u:''))} to count</li>`).join('')}</ul></details>`:''}`;
+  }
+  return `<div class="card"><h2>What's moving</h2>${body}${coachCues(kind,M2)}</div>`;
+}
+/* drill cues, read off the recent window rather than one short session */
+function coachCues(kind,M2){
   const cues=[];
-  if(cat){
-    const pop=num(st.avgPop), ex=num(st.avgExch), v=num(st.avgVelo), ot=num(st.onTarget);
-    if(pop!=null&&ex!=null&&ex>=0.95)cues.push('Exchange is the slow part ('+ex.toFixed(2)+'s). Footwork and glove-to-hand drills buy more pop time than arm work right now.');
-    if(pop!=null&&ex!=null&&ex<0.80&&v!=null)cues.push('Exchange is already quick ('+ex.toFixed(2)+'s) — the rest of the pop time is ball flight, so arm strength is the lever.');
+  if(kind==='games')return'';
+  const rows=M2&&M2.recent?M2.recent:pooledRows(kind).slice(-40);
+  const minRows=kind==='catching'?8:15;
+  if(rows.length<minRows)return'';
+  if(kind==='catching'){
+    const st=computeFromThrows(rows)||{};
+    const ex=num(st.avgExch), v=num(st.avgVelo), ot=num(st.onTarget);
+    if(ex!=null&&ex>=0.95)cues.push('Exchange is the slow part ('+ex.toFixed(2)+'s). Footwork and glove-to-hand drills buy more pop time than arm work right now.');
+    if(ex!=null&&ex<0.80&&v!=null)cues.push('Exchange is already quick ('+ex.toFixed(2)+'s) — the rest of the pop time is ball flight, so arm strength is the lever.');
     if(ot!=null&&ot<60)cues.push('Under 60% of throws are on the bag. A fast throw nobody catches is not a fast throw — chase accuracy before velo.');
-    if(ot!=null&&ot>=85&&v!=null)cues.push('Accuracy is locked in — safe to push throw velocity without giving the base away.');
     const spread=num(st.avgPop)!=null&&num(st.bestPop)!=null?num(st.avgPop)-num(st.bestPop):null;
     if(spread!=null&&spread>0.18)cues.push('Big gap between best and average pop ('+spread.toFixed(2)+'s) — the quick one is in there, repeating it is the work.');
-    return coachBody(good,work,cues);
+  } else {
+    const st=computeFromBalls(rows,rows[0]._hh||HH())||{};
+    if(num(st.gb)>=45)cues.push('Ground-ball rate is high — the barrel is working down through the zone. Drill: high-tee / top-half contact work.');
+    if(num(st.pu)>=15)cues.push('Pop-ups are up — usually early bat-head release or too steep. Drill: line-drive-only rounds off the tee.');
+    if(num(st.sweet)!=null&&num(st.sweet)<45)cues.push('Under half the batted balls are in the 8–32° window. Chase sweet-spot % before chasing max velo.');
+    if(num(st.avgEV)!=null&&num(st.maxEV)!=null&&num(st.maxEV)-num(st.avgEV)>15)cues.push('Big gap between max and average EV — the power is there, consistency of contact is the gap.');
+    if(num(st.ld)>=25&&num(st.hha)>=40)cues.push('Line-drive rate and hard-hit rate are both strong — this is the profile you want to repeat.');
   }
-  if(num(st.gb)>=45)cues.push('Ground-ball rate is high — the barrel is working down through the zone. Drill: high-tee / top-half contact work.');
-  if(num(st.pu)>=15)cues.push('Pop-ups are up — usually early bat-head release or too steep. Drill: line-drive-only rounds off the tee.');
-  if(num(st.sweet)!=null&&num(st.sweet)<45)cues.push('Under half the batted balls are in the 8–32° window. Chase sweet-spot % before chasing max velo.');
-  if(num(st.avgEV)!=null&&num(st.maxEV)!=null&&num(st.maxEV)-num(st.avgEV)>15)cues.push('Big gap between max and average EV — the power is there, consistency of contact is the gap.');
-  if(num(st.ld)>=25&&num(st.hha)>=40)cues.push('Line-drive rate and hard-hit rate are both strong — this is the profile you want to repeat.');
-  return coachBody(good,work,cues);
+  if(!cues.length)return'';
+  return `<div style="margin-top:14px"><span class="chip">Cues from your last ${rows.length} ${kind==='catching'?'throws':'balls'}</span>
+    <ul class="tight">${cues.map(c=>'<li>'+c+'</li>').join('')}</ul></div>`;
 }
-function coachBody(good,work,cues){
-  return `<div class="card"><h2>What's moving</h2><div class="hint">First half of your logged sessions vs. the most recent half</div>
-   ${good.length?'<div style="margin-top:6px"><span class="chip g">Improving</span><ul class="tight">'+good.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
-   ${work.length?'<div style="margin-top:12px"><span class="chip a">Watch</span><ul class="tight">'+work.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
-   ${!good.length&&!work.length?'<div class="hint">No trend big enough to call yet — keep logging.</div>':''}
-   ${cues.length?'<div style="margin-top:14px"><span class="chip">Cues from the last session</span><ul class="tight">'+cues.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>':''}
-  </div>`;
-}
+
 function pbCard(){
   const rows=KIND[VIEWKIND].metrics.filter(m=>m.dir==='up'||m.dir==='down').map(m=>{
     const b=best(m.k); if(!b)return'';
-    return `<tr><td>${m.n}</td><td style="font-weight:800">${fmt(m.k,b.v)} ${m.u}</td><td style="color:var(--dim)">${b.date}</td></tr>`;
+    return `<tr><td>${m.n}</td><td style="font-weight:800">${fmt(m.k,b.v)} ${m.u}</td><td style="color:var(--dim)">${esc(b.date)}</td></tr>`;
   }).filter(Boolean).join('');
   if(!rows)return'';
   return `<div class="card"><h2>Personal bests</h2><div class="hint">Best single-session value for each metric</div>
@@ -2185,7 +2406,7 @@ function pitchField(cat){
   return '<div><label>'+label+'</label>'+body+'</div>';
 }
 function vLog(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=localDate();
   const cat=LOGKIND==='catching';
   return `<div class="card">
    <h2>Log a session</h2>
@@ -2381,9 +2602,9 @@ function renderSplit(){
   el.innerHTML=`<div class="scroll"><table><thead><tr>${head.map(h=>'<th>'+h+'</th>').join('')}</tr></thead><tbody>`+
     groupByDate().map(g=>{
       if(cat){const s=computeFromThrows(g.balls);
-        return `<tr><td>${g.date}</td><td>${s.throws}</td><td>${fmt('bestPop',s.bestPop)}</td><td>${fmt('avgPop',s.avgPop)}</td></tr>`}
+        return `<tr><td>${esc(g.date)}</td><td>${s.throws}</td><td>${fmt('bestPop',s.bestPop)}</td><td>${fmt('avgPop',s.avgPop)}</td></tr>`}
       const s=computeFromBalls(g.balls,HH());
-      return `<tr><td>${g.date}</td><td>${s.swings}</td><td>${fmt('maxEV',s.maxEV)}</td><td>${fmt('avgEV',s.avgEV)}</td></tr>`}).join('')+
+      return `<tr><td>${esc(g.date)}</td><td>${s.swings}</td><td>${fmt('maxEV',s.maxEV)}</td><td>${fmt('avgEV',s.avgEV)}</td></tr>`}).join('')+
     `</tbody></table></div>`;
 }
 // Same date, same number of rows, same first and last ball: that's the same export again.
@@ -2422,7 +2643,7 @@ function backfillSession(s){
   if(!rows.length||(had&&Math.abs(rows.length-had)>Math.max(2,had*0.1)))return false;  // not the same round
   const before=JSON.stringify(cat?s.throws:s.balls);
   if(cat){s.throws=rows; s.summary=computeFromThrows(rows)}
-  else{s.balls=rows; s.summary=computeFromBalls(rows,HH())}
+  else{s.balls=rows; s.summary=computeFromBalls(rows,s.hh||HH())}
   const ap=avgPitch(rows); if(ap!=null)s.pitch=ap;
   const changed=JSON.stringify(cat?s.throws:s.balls)!==before;
   if(changed)s.mtime=Date.now();
@@ -2438,6 +2659,7 @@ function saveSession(){
   const pitchEl=g('f_pitch');
   const s={id:uid(),kind:LOGKIND,date:g('f_date').value,type:g('f_type').value,pitch:pitchEl?num(pitchEl.value):null,
     location:g('f_loc').value.trim(),notes:g('f_notes').value.trim(),mode:LOGMODE};
+  if(LOGKIND==='hitting')s.hh=HH();        // frozen: a birthday must not re-score this session later
   if(!s.date){alert('Pick a date.');return}
   const pack=(rows)=>Object.assign(cat?{throws:rows,summary:computeFromThrows(rows)}
                         :{balls:rows,summary:computeFromBalls(rows,HH())},{pitch:avgPitch(rows)});
@@ -2507,14 +2729,16 @@ function vTrends(){
   const first=S[0],lastp=S[S.length-1];
   const chg=S.length>1?lastp.v-first.v:null;
   return `<div class="card">
-   <h2>Trends</h2><div class="hint">Dashed blue line is the 3-session rolling average — that's the honest read; single sessions bounce.</div>
+   <h2>Trends</h2><div class="hint">${VIEWKIND==='games'
+     ?'Season to date after each game. Counting stats are running totals.'
+     :'Dots are sized by sample — hollow ones are too small to trust. The dashed blue rolling average is weighted by sample size, so a 5-ball session can’t swing it.'}</div>
    <div style="margin:10px 0"><select onchange="TRENDK=this.value;render()" style="max-width:280px">
      ${avail.map(m=>`<option value="${m.k}" ${m.k===TRENDK?'selected':''}>${m.n}</option>`).join('')}
    </select></div>
    ${lineChart(series(TRENDK),TRENDK,{band})}
    <div class="tiles" style="margin-top:14px">
-     <div class="tile"><div class="k">First (${first.date})</div><div class="v">${fmt(TRENDK,first.v)}<small>${MK[TRENDK].u}</small></div></div>
-     <div class="tile"><div class="k">Latest (${lastp.date})</div><div class="v">${fmt(TRENDK,lastp.v)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">First (${esc(first.date)})</div><div class="v">${fmt(TRENDK,first.v)}<small>${MK[TRENDK].u}</small></div></div>
+     <div class="tile"><div class="k">Latest (${esc(lastp.date)})</div><div class="v">${fmt(TRENDK,lastp.v)}<small>${MK[TRENDK].u}</small></div></div>
      <div class="tile"><div class="k">Total change</div><div class="v ${dirClass(TRENDK,chg)}">${chg==null?'—':dstr(TRENDK,chg)}<small>${MK[TRENDK].u}</small></div></div>
      <div class="tile"><div class="k">Sessions</div><div class="v">${S.length}</div></div>
    </div></div>
@@ -2540,7 +2764,7 @@ function vSessions(){
   <div class="hint">${S.length} logged · tap a row for the full breakdown</div>
   <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
   S.map(s=>{const st=sessionStats(s);
-   return `<tr class="clickable" onclick="openSession('${s.id}')"><td>${s.date}${s.solo
+   return `<tr class="clickable" onclick="openSession('${esc(s.id)}')"><td>${esc(s.date)}${s.solo
       ?'<div style="font-size:10.5px;color:var(--amber);font-weight:700;letter-spacing:.04em">SEPARATE ROUND</div>':''}</td>
     <td>${typeSelect(s)}</td>
     <td>${s.pitch!=null?Math.round(s.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>`+
@@ -2556,7 +2780,7 @@ function typeSelect(s,small){
   const list=STYPES[kindOf(s)].slice();
   if(s.type&&!list.includes(s.type))list.unshift(s.type);     // e.g. a merged "Front toss + Tee"
   return `<select class="inline${small?' sm':''}" onclick="event.stopPropagation()"
-    onchange="event.stopPropagation();setType('${s.id}',this.value)">
+    onchange="event.stopPropagation();setType('${esc(s.id)}',this.value)">
     ${!s.type?'<option value="" selected>—</option>':''}
     ${list.map(o=>`<option${o===s.type?' selected':''}>${esc(o)}</option>`).join('')}</select>`;
 }
@@ -2574,9 +2798,9 @@ function excludedCard(){
    <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>
      <th>${cat?'Avg pop':'Avg EV'}</th><th>Counts as</th></tr></thead><tbody>`+
    ex.map(s=>{const st=sessionStats(s), k=cat?'avgPop':'avgEV';
-     return `<tr><td>${s.date}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>
+     return `<tr><td>${esc(s.date)}</td><td style="color:var(--dim)">${esc(s.type||'')}</td>
       <td>${s.pitch!=null?Math.round(s.pitch)+' mph':'—'}</td><td>${fmt(k,num(st[k]))}</td>
-      <td><select class="inline sm" onchange="setGroup('${s.id}',this.value)">
+      <td><select class="inline sm" onchange="setGroup('${esc(s.id)}',this.value)">
         ${Object.keys(GROUPS).map(g=>`<option value="${g}"${g==='out'?' selected':''}>${GROUPS[g]}</option>`).join('')}
       </select></td></tr>`}).join('')+
    `</tbody></table></div></div>`;
@@ -2590,10 +2814,11 @@ function openSession(id){
   document.getElementById('dlgTitle').textContent=s.date+(s.type?' · '+s.type:'');
   const tiles=KIND[kindOf(s)].metrics.filter(m=>num(st[m.k])!=null).map(m=>{const d=delta(m.k,id);
     return `<div class="tile"><div class="k">${m.n}</div><div class="v" style="font-size:20px">${fmt(m.k,num(st[m.k]))}<small>${m.u}</small></div>
-    ${d!=null?`<div class="d ${dirClass(m.k,d)}">${dstr(m.k,d)}</div>`:''}</div>`}).join('');
+    ${(d!=null&&kindOf(s)!=='games')?`<div class="d ${dirClass(m.k,d)}">${dstr(m.k,d)}</div>`:''}</div>`}).join('');
   const balls=s.balls||[], thr=s.throws||[];
   document.getElementById('dlgBody').innerHTML=`
-   ${s.location||s.pitch?`<div class="hint">${[s.location,s.pitch?s.pitch+' mph pitch':''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
+   ${(s.location||s.pitch||(kindOf(s)==='hitting'&&(s.hh||dayHHof(s))))?`<div class="hint">${[s.location,s.pitch?s.pitch+' mph pitch':'',
+      kindOf(s)==='hitting'?`hard-hit scored at ${s.hh||dayHHof(s)}+ mph`:''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
    <div class="tiles">${tiles}</div>
    ${(()=>{const o=outcomeLine(balls); return o?`<div style="margin-top:14px"><label>Simulated at-bats</label>
      <div class="row" style="gap:16px;align-items:baseline">
@@ -2641,7 +2866,7 @@ function openSession(id){
 function roundsTable(s,id){
   const rounds=roundsOfDate(s), cat=kindOf(s)==='catching';
   if(rounds.length<2)
-    return `<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${id}')"
+    return `<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${esc(id)}')"
       style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`;
   const head=cat?['Round','Throws','Pitch in','Avg pop']:['Round','Balls','Avg pitch','Avg EV'];
   return `<div style="margin-top:18px"><label>${rounds.length} rounds logged on ${esc(s.date)}</label>
@@ -2658,11 +2883,11 @@ function roundsTable(s,id){
         <td>${pt.pitch!=null?Math.round(pt.pitch)+'<small style="color:var(--dim)"> mph</small>':'—'}</td>
         <td style="font-weight:700">${fmt(ks[0],num(st[ks[0]]))}</td>
         <td>${typeSelect(pt,true)}</td>
-        <td><select class="inline sm" onchange="setGroup('${pt.id}',this.value)">
+        <td><select class="inline sm" onchange="setGroup('${esc(pt.id)}',this.value)">
           ${Object.keys(GROUPS).map(g=>`<option value="${g}"${g===d?' selected':''}>${GROUPS[g]}</option>`).join('')}
         </select></td>
         <td><button class="btn ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:rgba(239,77,90,.4)"
-          onclick="delSession('${pt.id}')">Delete</button></td></tr>`}).join('')+
+          onclick="delSession('${esc(pt.id)}')">Delete</button></td></tr>`}).join('')+
     `</tbody></table></div></div>`;
 }
 function delSession(id){
@@ -2706,7 +2931,7 @@ function vReport(){
    <div class="card"><h2>Session log</h2><div class="scroll"><table><thead><tr><th>Date</th><th>Type</th>
      <th>${cat?'Throws':'BIP'}</th><th>${cat?'Best pop':'Max EV'}</th><th>${cat?'Avg pop':'Avg EV'}</th><th>Notes</th></tr></thead><tbody>`+
    S.slice().reverse().map(s=>{const st=sessionStats(s); const ks=cat?['throws','bestPop','avgPop']:['swings','maxEV','avgEV'];
-     return `<tr><td>${s.date}</td><td>${esc(s.type||'')}</td><td>${num(st[ks[0]])!=null?Math.round(st[ks[0]]):'—'}</td>
+     return `<tr><td>${esc(s.date)}</td><td>${esc(s.type||'')}</td><td>${num(st[ks[0]])!=null?Math.round(st[ks[0]]):'—'}</td>
       <td>${fmt(ks[1],num(st[ks[1]]))}</td><td>${fmt(ks[2],num(st[ks[2]]))}</td>
       <td style="white-space:normal;color:var(--dim);max-width:280px">${esc(s.notes||'')}</td></tr>`}).join('')+
    `</tbody></table></div></div>`;
@@ -2790,9 +3015,23 @@ function dropFiles(){
 }
 function savePlayer(){
   const g=id=>document.getElementById(id).value.trim();
+  const before=HH();
   DB.player={name:g('p_name'),age:g('p_age'),level:g('p_level'),bats:document.getElementById('p_bats').value};
   const hh=num(g('p_hh')); DB.settings.hardHit=hh||null;
   const zc=document.getElementById('p_zcal'); if(zc)DB.settings.zoneCal=zc.value;
+  const after=HH();
+  const logged=DB.sessions.filter(s=>kindOf(s)==='hitting'&&s.hh&&s.hh!==after);
+  if(after!==before&&logged.length){
+    // default is to leave history alone — re-scoring everything is the user's explicit call
+    if(confirm(`The hard-hit line is now ${after} mph (was ${before}).
+
+Re-score your ${logged.length} earlier session${logged.length>1?'s':''} at ${after} mph too?
+
+OK = re-score everything at ${after}.
+Cancel = keep each session at the line it was logged with (recommended — keeps your trend honest).`)){
+      const now=Date.now(); logged.forEach((s,i)=>{s.hh=after;s.mtime=now+i});
+    }
+  }
   save(); render(); alert('Saved.');
 }
 function dl(name,text,type){
@@ -2800,7 +3039,7 @@ function dl(name,text,type){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
   a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
-function expJSON(){dl(`hittrax-backup-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(DB,null,2),'application/json')}
+function expJSON(){dl(`hittrax-backup-${localDate()}.json`,JSON.stringify(DB,null,2),'application/json')}
 function expCSV(){
   const ks=KIND[VIEWKIND].metrics.map(m=>m.k);
   let csv='date,type,location,pitch_speed,'+ks.join(',')+',notes\n';
@@ -2808,15 +3047,15 @@ function expCSV(){
     csv+=[s.date,s.type||'',s.location||'',s.pitch||''].map(v=>`"${(''+v).replace(/"/g,'""')}"`).join(',')+','+
       ks.map(k=>num(st[k])!=null?(+st[k]).toFixed(MK[k].d):'').join(',')+
       `,"${(s.notes||'').replace(/"/g,'""')}"\n`});
-  dl(`hittrax-${VIEWKIND}-${new Date().toISOString().slice(0,10)}.csv`,csv,'text/csv');
+  dl(`hittrax-${VIEWKIND}-${localDate()}.csv`,csv,'text/csv');
 }
 function impJSON(inp){
   const f=inp.files[0]; if(!f)return; const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);
     if(!d.sessions)throw new Error('Not a tracker backup');
     if(!confirm(`Import ${d.sessions.length} sessions? They merge in with what's already here — nothing is replaced.`))return;
-    const inc=Object.assign(blank(),d); inc.updatedAt=Date.now();
-    inc.sessions.forEach(s=>{if(!s.id)s.id=uid(); if(!s.mtime)s.mtime=1});
+    const inc=sanitizeDoc(d); inc.updatedAt=Date.now();
+    if(!inc.sessions.length)throw new Error('No usable sessions in that file');
     DB=mergeDocs(DB,inc); save(); render(); alert('Imported.');
   }catch(e){alert('Import failed: '+e.message)} };
   r.readAsText(f); inp.value='';
@@ -2835,6 +3074,9 @@ readSession();
 // a device that already knows its borrowed sign-in died should still say so, not just "local"
 if(!session)try{EXPIRED=!!localStorage.getItem(DEADTOK)}catch(e){}
 DB=load();
+// sessions from before thresholds were frozen: pin them at today's threshold, so the next age
+// change can't silently rewrite their hard-hit numbers
+(function(){let n=0; DB.sessions.forEach(s=>{if(kindOf(s)==='hitting'&&!s.hh){s.hh=HH();n++}}); if(n)saveLocal();})();
 // open on whichever discipline was logged most recently
 (function(){const last=DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:1).pop();
   if(last)VIEWKIND=kindOf(last); TRENDK=TRENDDEF[VIEWKIND]; LOGKIND=VIEWKIND;})();

@@ -58,6 +58,31 @@ When every round of the day has raw rows, the day's numbers are recomputed from 
 so they are exact. If one round was typed in as a summary instead, counts are summed, bests take
 the best, and averages are weighted by round size.
 
+## How progress is judged
+A single session is too small to read on its own: at 16 swings, his exit velo has a standard
+error of about 2 mph, so two sessions need to differ by roughly 6 mph before the gap means
+anything. So:
+
+- **What's moving** pools the actual batted balls (or clean throws, or plate appearances), compares
+  the most recent window with the one before it, and only calls a change when it clears a 95% bar
+  (Welch test for averages, two-proportion test for rates). Everything else is listed as "inside the
+  noise" with how big a change it would take to count. With too little data it says so rather than
+  guessing.
+- **Trends** size each dot by its sample, hollow when too small to trust, and the rolling average
+  is weighted by sample size so a 5-ball session can't swing it.
+- **Personal bests** for averages and rates need a minimum sample (10 balls, 8 throws); single-event
+  bests like max exit velo or best pop count from any session.
+- **Games** trend as the season line after each game, because one game is 3-5 plate appearances.
+  Rate stats have no single-game "best"; counting stats show single-game highs.
+- **Hard-hit is frozen per session** at the threshold in force when it was logged, so changing his
+  age (or the threshold) never silently re-scores history. Re-scoring everything is an explicit
+  choice offered when the threshold changes.
+
+## Data hygiene
+Every way data enters - import links, backup files, the cloud, and local storage - is rebuilt from
+a whitelist of fields with known types before it is kept, and everything rendered is escaped.
+That matters more than usual here: the app shares an origin with the hub and the budget app.
+
 ## Two disciplines
 A **Hitting / Catching** switch sits under the tabs (it appears once a catching session exists).
 Each discipline keeps its own sessions, trends, personal bests, benchmarks and report.
