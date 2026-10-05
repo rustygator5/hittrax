@@ -58,6 +58,18 @@ Other names are matched too - Pop Time, Exchange / Transfer, Velo / Arm Strength
 Outcome, Base, Date. Milliseconds convert to seconds, feet to inches, and anything unrecognised
 is listed under the preview.
 
+### Throw-down visuals
+HitTrax reports the pop time and a +/- second differential against the runner, so the runner's own
+time is recoverable (runner = pop - differential). Checked against the real export: that
+reconstruction predicts HitTrax's own Out/Safe call on every clean rep.
+
+- **Throw-downs to second** - an animated overhead diamond racing the ball (home to second) against
+  the runner (first to second) on each rep, with a live clock, exchange and arm strength, and the
+  OUT / SAFE verdict and margin. Plays every rep in order or one you pick. Bases are drawn at the
+  age-appropriate distance (70 ft at 12U and under, 80 at 14U, else 90).
+- **Where each rep was won or lost** - one bar per throw split into exchange and ball flight, with
+  a red line where the runner reaches second. Anything finishing left of the line is an out.
+
 ### Clean reps vs. misfires
 A real session is not 22 clean throw-downs. HitTrax logs every pitch, so a dropped ball or a
 double clutch shows up as a pop time of 5-6 seconds, and a rep with no throw at all shows up as
