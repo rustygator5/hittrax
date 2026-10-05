@@ -302,3 +302,14 @@ Export a JSON backup before clearing browser history on a device that has never 
 python -m http.server 8776 --directory "C:/Users/user/Documents/HitTrax"
 ```
 (also registered in .claude/launch.json as "hittrax")
+
+## Regression tests
+Open `tests.html` (locally at http://localhost:8776/tests.html, or `/hittrax/tests.html` on the live site) — the tab
+title reads `✓ 68/68` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
+key (`hittrax.test.v1`), never signs in, never syncs and ignores `#add=` links, and it deletes that key when done, so
+it's safe on a device holding real data. The fixtures are synthetic but use HitTrax's exact export headers; every
+expected number is worked out by hand in the comments. Covers the parsers (dates, decimal commas, scorebook results,
+Type column, takes, misfires, HTML-instead-of-CSV), hitting / catching / game math, bat speed, the significance tests
+behind "What's moving", frozen thresholds, sync merge + tombstones, zone calibration, the sanitizer and escaping.
+Run it after any change to parsing or stats, before pushing. The footer of the app shows the build stamp
+(`APP_BUILD`), so you can tell which version a phone is actually running.

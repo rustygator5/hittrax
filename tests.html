@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HitTrax Tracker — tests</title>
+<style>
+  body{font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e9eefb;margin:0;padding:24px;max-width:900px}
+  h1{font-size:20px;margin:0 0 4px} .hint{color:#93a4c6;font-size:13px;margin-bottom:16px}
+  .sum{font-size:18px;font-weight:800;margin:12px 0 18px} .ok{color:#2fbf71} .bad{color:#ef4d5a}
+  .grp{margin:18px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#6c7fa5;font-weight:700}
+  .t{padding:5px 0;border-bottom:1px solid #1c2a45;display:flex;gap:10px}
+  .t .m{color:#93a4c6;font-size:12.5px;margin-left:auto;text-align:right}
+  iframe{display:none}
+</style></head><body>
+<h1>HitTrax Tracker — regression tests</h1>
+<div class="hint">Runs the real app in an isolated test mode (<code>index.html?test=1</code>: its own storage, no sign-in, no sync),
+so it's safe to open on a device that holds real data. Fixtures are synthetic but use HitTrax's exact column layouts,
+and every expected number is worked out by hand in the comments.</div>
+<div class="sum" id="sum">Running…</div>
+<div id="out"></div>
+<iframe id="app" src="index.html?test=1"></iframe>
+<script>
+/* ---------- fixtures: HitTrax's real headers, made-up values ---------- */
+const HIT_HEADER='#, AB, Date, Time Stamp, Pitch, Strike Zone, P. Type, Velo, LA, Dist, Res, Type, Horiz. Angle, Pts, Strike Zone Bottom, Strike Zone Top, Strike Zone Width, Vertical Distance, Horizontal Distance, POI X, POI Y, POI Z, Spray Chart X, Spray Chart Z, Fielded X, Fielded Z, Bat Material, User, Pitch Angle, Batting, Level, Opposing Player, Tag';
+const hr=(n,t,pitch,zone,velo,la,dist,res,type,horiz,poiy,sx,sz)=>
+  `${n}, ${n}, 10/4/2026 12:58:${String(10+n).padStart(2,'0')}.477, 0:0:${n}.000, ${pitch}, ${zone}, Other, ${velo}, ${la}, ${dist}, ${res}, ${type}, ${horiz}, 0, 16.8, 35.2, 17.0, 0, 0, 0, ${poiy}, 0, ${sx}, ${sz}, 0, 0, Undefined, Test Player, -17.0, Right, Baseball - 12U, , `;
+const HIT_CSV=['Test Report,,,,',HIT_HEADER,
+  hr(1,'',30,5,60,15,150,'1B-8','LD',0,26,0,150),
+  hr(2,'',30,3,50,30,120,'F9','FB',30,32,60,103.9),
+  hr(3,'',30,7,40,-10,20,'6-3','GB',-20,18,-6.8,18.8),
+  `4, 4, 10/4/2026 12:58:14.477, 0:0:4.000, 30, 13, Other, 0, , , , , , 3, 16.8, 35.2, 17.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Undefined, Test Player, -17.0, Right, Baseball - 12U, , `,
+  hr(5,'',30,1,70,20,200,'2B-7','LD',-30,33,-100,173.2),
+  hr(6,'',30,11,55,60,90,'Foul','FB',50,40,68.9,57.9),
+  hr(7,'',20,9,45,5,60,'E5','GB',-25,20,-25.4,54.4),
+  hr(8,'',30,6,65,25,230,'HR-8','LD',5,28,20,229.1)].join('\n');
+/* by hand: 7 balls in play (row 4 is a take, velo 0)
+   results 1B, out, out, 2B, foul, error, HR -> 6 at-bats (foul excluded), 3 hits, TB 1+2+4=7 -> .500 / 1.167
+   Type column: LD rows 1,5,8 / FB 2,6 / GB 3,7 -> 42.9 / 28.6 / 28.6 %
+   avg EV 385/7 = 55.0 ; hard-hit at 55: 60,70,55,65 -> 4/7 = 57.1% ; sweet 8-32: 15,30,20,25 -> 4/7
+   L/C/R on Horiz (fouls out): L -20,-30,-25 / C 0,5 / R 30 -> 3/2/1 of 6
+   bat speed q=.2: (ev-.2p)/1.2 -> 53.33, 49.17, 45, 40.83, 36.67, 34.17, 28.33 ; top quarter round(1.75)=2 -> 51.25 */
+const CATCH_CSV=['#, Date, Time Stamp, Pitch, Throw, Pop, Exchg, Res, +/- Sec, Catcher',
+  '1, 9/9/2026 19:35:34.098, 0:0:0.000, 35.0, 45.0, 2.20, 0.70, Out, -0.05, Test Player',
+  '2, 9/9/2026 19:35:42.223, 0:0:8.125, 35.0, 44.0, 2.40, 0.80, Safe, 0.30, Test Player',
+  '3, 9/9/2026 19:35:59.064, 0:0:24.966, 35.0, 30.0, 6.10, 2.00, Safe, 3.90, Test Player',
+  '4, 9/9/2026 19:36:16.049, 0:0:41.951, 0.0, 20.0, 0.00, 0.00, Safe, 0.00, Test Player',
+  '5, 9/9/2026 19:36:26.922, 0:0:52.824, 36.0, 46.0, 2.10, 0.65, Out, -0.12, Test Player',
+  '6, 9/9/2026 19:36:42.731, 0:1:8.633, 34.0, 43.0, 2.50, 0.85, Safe, 0.40, Test Player'].join('\n');
+/* by hand: row 3 misfire (pop 6.1), row 4 no throw (pop 0, throw 20) -> clean 1,2,5,6
+   best pop 2.10 ; avg pop 9.2/4 = 2.30 ; avg exchange 3.0/4 = 0.75 ; clean 4/6 = 66.7%
+   outs among measured reps (1,2,3,5,6): 2/5 = 40% ; runner = pop - diff -> 2.25,2.10,2.22,2.10, all agree with Res */
+
+/* ---------- harness ---------- */
+const results=[]; let W;
+const run=code=>W.eval(code);
+const near=(a,b,eps)=>typeof a==='number'&&Math.abs(a-b)<=(eps==null?1e-6:eps);
+function check(group,name,ok,detail){results.push({group,name,ok:!!ok,detail})}
+function eq(group,name,got,want,eps){
+  const ok=(typeof want==='number')?near(got,want,eps):JSON.stringify(got)===JSON.stringify(want);
+  check(group,name,ok,ok?'':`got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+}
+function fresh(){run(`DB=blank(); DB.player.age='12'; DB.settings={}; VIEWKIND='hitting';`)}
+
+function tests(){
+  // parsing primitives
+  eq('Parsing','US date with milliseconds',run(`parseDate('10/4/2026 12:58:19.477')`),'2026-10-04');
+  eq('Parsing','elapsed Time Stamp is not a date',run(`parseDate('0:2:14.444')`),null);
+  eq('Parsing','ISO date',run(`parseDate('2026-09-09')`),'2026-09-09');
+  eq('Parsing','two-digit year',run(`parseDate('9/9/26')`),'2026-09-09');
+  eq('Parsing','decimal comma',run(`numField('70,5')`),70.5);
+  eq('Parsing','thousands separator',run(`numField('1,205')`),1205);
+  eq('Parsing','scorebook single 1B-8',run(`parseResult('1B-8')`),'single');
+  eq('Parsing','scorebook flyout F3',run(`parseResult('F3')`),'out');
+  eq('Parsing','scorebook groundout 6-3',run(`parseResult('6-3')`),'out');
+  eq('Parsing','reached on error E5',run(`parseResult('E5')`),'error');
+  eq('Parsing','home run HR-8',run(`parseResult('HR-8')`),'hr');
+  eq('Parsing','walk is not an at-bat',run(`parseResult('BB')`),null);
+  eq('Parsing','HTML is refused as a CSV',run(`parsePaste('<!doctype html><html>error</html>').balls.length`),0);
+
+  // a hitting export
+  fresh(); W.__fx=HIT_CSV;
+  run(`__p=parsePaste(__fx); __st=computeFromBalls(__p.balls,55,0.2); __o=outcomeLine(__p.balls); __th=fieldThirds(__p.balls);`);
+  eq('Hitting export','balls in play (take skipped, preamble skipped)',run(`__p.balls.length`),7);
+  eq('Hitting export','date read from the Date column',run(`JSON.stringify(__p.dates)`),'["2026-10-04"]');
+  eq('Hitting export','Type column kept separate from Res',run(`__p.balls[0].result+'/'+__p.balls[0].btype`),'single/ld');
+  eq('Hitting export','avg exit velo',run(`__st.avgEV`),55.0);
+  eq('Hitting export','max exit velo',run(`__st.maxEV`),70);
+  eq('Hitting export','hard-hit rate at 55',run(`__st.hha`),400/7,1e-6);
+  eq('Hitting export','sweet-spot rate',run(`__st.sweet`),400/7,1e-6);
+  eq('Hitting export','line-drive share uses the Type column',run(`__st.ld`),300/7,1e-6);
+  eq('Hitting export','simulated AVG (foul not an at-bat)',run(`__o.avg`),0.5);
+  eq('Hitting export','simulated SLG',run(`__o.slg`),7/6,1e-9);
+  eq('Hitting export','L/C/R split',run(`__th.cols.map(c=>c.n).join('/')`),'3/2/1');
+  eq('Hitting export','bat speed (top quarter, q 0.2)',run(`__st.batSpeed`),51.25,1e-6);
+  eq('Hitting export','pitch speed averaged from the file',run(`avgPitch(__p.balls)`),29);
+  eq('Hitting export','strike zone parsed',run(`__p.balls[0].zone+'/'+__p.balls[0].szbot+'/'+__p.balls[0].sztop`),'5/16.8/35.2');
+  eq('Hitting export','player prefilled from User/Level',run(`(prefillPlayer(__p.balls),DB.player.name+'|'+DB.player.level)`),'Test Player|Baseball - 12U');
+
+  // a catching export
+  W.__fx=CATCH_CSV;
+  run(`__c=parseThrows(__fx); __cs=computeFromThrows(__c.throws);`);
+  eq('Catching export','rows read',run(`__c.throws.length`),6);
+  eq('Catching export','clean reps (misfire and no-throw excluded)',run(`__cs.throws`),4);
+  eq('Catching export','misfires / no-throws counted',run(`__cs.misfires+'/'+__cs.nothrows`),'1/1');
+  eq('Catching export','clean rep %',run(`__cs.cleanPct`),400/6,1e-6);
+  eq('Catching export','best pop',run(`__cs.bestPop`),2.10);
+  eq('Catching export','avg pop',run(`__cs.avgPop`),2.30,1e-9);
+  eq('Catching export','avg exchange',run(`__cs.avgExch`),0.75,1e-9);
+  eq('Catching export','projected outs',run(`__cs.outPct`),40,1e-9);
+  check('Catching export','runner time (pop - differential) reproduces every Out/Safe',
+    run(`cleanThrows(__c.throws).every(x=>runnerTime(x)==null||((+x.pop<=runnerTime(x))===(x.outcome==='out')))`));
+
+  // a game line
+  run(`__g=computeGame({pa:14,ab:10,h:4,d:1,bb:2,hbp:1,sf:1,k:2,qab:6,ps:50,csa:2,sba:3,po:10,a:1,e:1});`);
+  eq('Games','AVG 4/10',run(`__g.avg`),0.4);
+  eq('Games','OBP (4+2+1)/(10+2+1+1)',run(`__g.obp`),0.5);
+  eq('Games','SLG 5 TB / 10',run(`__g.slg`),0.5);
+  eq('Games','OPS',run(`__g.ops`),1.0,1e-9);
+  eq('Games','K% 2/14',run(`__g.kPct`),200/14,1e-9);
+  eq('Games','QAB% 6/14',run(`__g.qabPct`),600/14,1e-9);
+  eq('Games','pitches per PA',run(`__g.psPA`),50/14,1e-9);
+  eq('Games','CS% 2/(2+3)',run(`__g.csPct`),40,1e-9);
+  eq('Games','fielding % 11/12',run(`__g.fpct`),11/12,1e-9);
+  eq('Games','doubleheader sums counts before rates',
+    run(`(t=>t.avg)(sumGames([computeGame({ab:3,h:3}),computeGame({ab:5,h:0})]))`),3/8,1e-9);
+
+  // statistics
+  run(`__w=wilson(5,10);`);
+  eq('Statistics','Wilson interval low',run(`__w.lo`),23.66,0.01);
+  eq('Statistics','Wilson interval high',run(`__w.hi`),76.34,0.01);
+  check('Statistics','Welch test calls a clear difference',run(`testMean([40,41,39,40,42,38,40,41],[50,51,49,50,52,48,50,51]).sig`));
+  check('Statistics','Welch test ignores identical samples',!run(`(r=>r&&r.sig)(testMean([40,41,39,40,42,38],[40,41,39,40,42,38]))`));
+  check('Statistics','two-proportion test needs a real gap',!run(`(r=>r&&r.sig)(testProp(8,16,9,16))`));
+  // what's moving, end to end on constructed sessions
+  fresh();
+  run(`(function(){const mk=(d,base)=>({id:uid(),kind:'hitting',date:d,mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},
+     balls:Array.from({length:30},(_,i)=>({ev:base+(i%2?2:-2),la:15,pitch:30}))});
+     DB.sessions=[mk('2026-09-01',40),mk('2026-09-08',50)];})();`);
+  check('Statistics','What’s moving calls a 10 mph gain on 30+30 balls',run(`movingTests('hitting').tests.find(t=>t.k==='avgEV').sig`));
+  run(`DB.sessions[1].balls.forEach(b=>b.ev=b.ev-10);`);
+  check('Statistics','What’s moving stays quiet when nothing changed',!run(`movingTests('hitting').tests.find(t=>t.k==='avgEV').sig`));
+
+  // frozen thresholds
+  fresh();
+  run(`DB.sessions=[{id:'s1',kind:'hitting',date:'2026-09-01',mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},
+     balls:[{ev:56,la:15,pitch:30},{ev:60,la:15,pitch:30},{ev:50,la:15,pitch:30},{ev:40,la:15,pitch:30}]}];`);
+  const before=run(`sessionStats(DB.sessions[0]).hha`);
+  run(`DB.player.age='13';`);
+  eq('Integrity','a birthday doesn’t re-score history (hard-hit stays at the logged line)',run(`sessionStats(DB.sessions[0]).hha`),before);
+  eq('Integrity','bat speed (4 balls, q 0.2, all 30 mph)',run(`batSpeedOf([{ev:60,pitch:30},{ev:60,pitch:30},{ev:60,pitch:30},{ev:60,pitch:30}],0.2)`),45,1e-9);
+
+  // sync merge
+  run(`__a={...blank(),sessions:[{id:'A',mtime:100,date:'2026-09-01'}],deleted:[{id:'B',ts:300}],updatedAt:2};
+       __b={...blank(),sessions:[{id:'A',mtime:50,date:'2026-09-01'},{id:'B',mtime:200,date:'2026-09-02'},{id:'C',mtime:1,date:'2026-09-03'}],updatedAt:1};
+       __m=mergeDocs(__a,__b);`);
+  eq('Integrity','merge keeps the union, newest edit wins, deletes stick',run(`__m.sessions.map(s=>s.id+':'+s.mtime).sort().join(',')`),'A:100,C:1');
+
+  // zone calibration
+  fresh(); run(`DB.settings.zoneCal='left';`);
+  eq('Zone','shift left moves zone 3 to the middle column',run(`zonePos(3)`),0);
+  eq('Zone','shift left moves zone 11 (a half) too',run(`zonePos(11)`),0.25);
+  run(`DB.settings.zoneCal='mirror';`);
+  eq('Zone','mirror flips zone 1 to the right',run(`zonePos(1)`),1);
+
+  // security
+  eq('Security','a script in a date drops the whole session',run(`sanitizeSession({date:'<img src=x onerror=alert(1)>'})`),null);
+  check('Security','a hostile id is replaced',run(`/^[A-Za-z0-9_-]+$/.test(sanitizeSession({date:'2026-10-01',id:"a');alert(1);('"}).id)&&sanitizeSession({date:'2026-10-01',id:"a');alert(1);('"}).id!=="a');alert(1);('"`));
+  eq('Security','non-numbers are stripped from stats',run(`JSON.stringify(sanitizeSession({date:'2026-10-01',summary:{h:'<b>',ab:4,'bad key':1}}).summary)`),'{"ab":4}');
+  eq('Security','unknown result words are dropped',run(`sanitizeSession({date:'2026-10-01',balls:[{ev:'55',result:'<x>'}]}).balls[0]`),{ev:55});
+  eq('Security','settings are whitelisted',run(`JSON.stringify(sanitizeSettings({hardHit:'<img>',zoneCal:'evil',batQ:0.22,extra:1}))`),'{"batQ":0.22}');
+  eq('Security','escape covers single quotes',run(`esc("<a href='x'>")`),'&lt;a href=&#39;x&#39;&gt;');
+
+  // dates
+  eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
+  check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));
+}
+
+function report(){
+  const pass=results.filter(r=>r.ok).length, n=results.length;
+  document.getElementById('sum').innerHTML=`<span class="${pass===n?'ok':'bad'}">${pass===n?'✓ All':'✗'} ${pass} / ${n} passed</span>`;
+  document.title=`${pass===n?'✓':'✗'} ${pass}/${n} — HitTrax tests`;
+  let html='', grp='';
+  results.forEach(r=>{
+    if(r.group!==grp){grp=r.group; html+=`<div class="grp">${grp}</div>`}
+    html+=`<div class="t"><span class="${r.ok?'ok':'bad'}">${r.ok?'✓':'✗'}</span><span>${r.name}</span>${r.detail?`<span class="m">${r.detail.replace(/</g,'&lt;')}</span>`:''}</div>`;
+  });
+  document.getElementById('out').innerHTML=html;
+}
+document.getElementById('app').addEventListener('load',()=>{
+  W=document.getElementById('app').contentWindow;
+  try{tests()}catch(e){check('Harness','suite crashed',false,e.message)}
+  try{run(`localStorage.removeItem(KEY)`)}catch(e){}          // leave nothing behind
+  report();
+});
+</script></body></html>

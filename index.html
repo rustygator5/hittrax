@@ -166,8 +166,11 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.5';
-const KEY='hittrax.tracker.v1';
+const APP_BUILD='2026.10.05.6';
+// ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
+// so the regression suite can run on the same device as real data without touching it
+const TEST=/[?&]test=1(&|$)/.test(location.search);
+const KEY=TEST?'hittrax.test.v1':'hittrax.tracker.v1';
 const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
 // Bump whenever the parser learns a new column — stored source files are re-read on boot so
 // older rounds pick up whatever the app can now understand.
@@ -297,6 +300,7 @@ let EXPIRED=false;
 let session=null, sessSrc=null, pushTimer=null, pollTimer=null, serverTs=0, syncState='local';
 
 function readSession(){
+  if(TEST)return;
   const keys=[SESS_KEY].concat(localStorage.getItem(NOBORROW)?[]:BORROW);
   for(const k of keys){
     try{const raw=localStorage.getItem(k); if(!raw)continue; const s=JSON.parse(raw);
@@ -3590,7 +3594,7 @@ if((DB.parserV||0)!==PARSER_V){
   saveLocal();
 }
 render();
-(function(){const inc=readImportLink(); if(inc)setTimeout(()=>offerImport(inc),60)})();
+(function(){if(TEST)return; const inc=readImportLink(); if(inc)setTimeout(()=>offerImport(inc),60)})();
 setSync(session?'saving':'local');
 startSync();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&session)pullMerge()});
