@@ -15,6 +15,20 @@ from HitTrax data. No install, no server needed — open the file, or run the lo
    before saving); pitch speed is averaged from the file when you leave that field blank.
 2. **Type the summary** — key in whatever the HitTrax session report screen shows.
 
+## Games (GameChanger)
+A third discipline alongside Hitting and Catching, for what actually happened in games. Type the
+line straight off a GameChanger box score - PA, AB, H, 2B, 3B, HR, RBI, R, BB, K, HBP, SF, SB, CS,
+plus innings caught, passed balls, steals allowed and runners caught - and the slash line, rates
+and season totals are derived: AVG, OBP, SLG, OPS, total bases, extra-base hits, K%, BB%, CS%.
+Doubleheaders on one date add their counts together and the rates are recomputed, not averaged.
+
+GameChanger's CSV export is staff-only, so there's nothing to upload on a family account; the
+entry form takes the numbers off the screen (or off a screenshot) in under a minute.
+
+**Cage vs game** sits on that dashboard and is the point of the whole thing: HitTrax's simulated
+AVG and SLG next to the real ones, average exit velo next to strikeout rate, and best pop time
+next to the share of runners actually thrown out.
+
 ## One day = one session
 HitTrax writes a file per round, so a single trip to the cage can arrive as two or three uploads.
 Anything logged on the same date (within the same discipline) is grouped into one session

@@ -459,12 +459,35 @@ const CM=[
  {k:'outPct',   n:'Projected Outs %',   u:'%',   d:0, dir:'up'},
  {k:'avgMiss',  n:'Avg Miss from Bag',  u:'in',  d:1, dir:'down'},
 ];
-const MK=Object.fromEntries(M.concat(CM).map(m=>[m.k,m]));
+// GameChanger box-score line
+const GM=[
+ {k:'avg',  n:'Batting Average', u:'', d:3, dir:'up'},
+ {k:'obp',  n:'On-Base',         u:'', d:3, dir:'up'},
+ {k:'slg',  n:'Slugging',        u:'', d:3, dir:'up'},
+ {k:'ops',  n:'OPS',             u:'', d:3, dir:'up'},
+ {k:'h',    n:'Hits',            u:'', d:0, dir:'up'},
+ {k:'xbh',  n:'Extra-Base Hits', u:'', d:0, dir:'up'},
+ {k:'tb',   n:'Total Bases',     u:'', d:0, dir:'up'},
+ {k:'rbi',  n:'RBI',             u:'', d:0, dir:'up'},
+ {k:'r',    n:'Runs',            u:'', d:0, dir:'up'},
+ {k:'bbPct',n:'Walk Rate',       u:'%',d:0, dir:'up'},
+ {k:'kPct', n:'Strikeout Rate',  u:'%',d:0, dir:'down'},
+ {k:'sb',   n:'Stolen Bases',    u:'', d:0, dir:'up'},
+ {k:'csPct',n:'Caught Stealing %',u:'%',d:0,dir:'up'},
+ {k:'pb',   n:'Passed Balls',    u:'', d:0, dir:'down'},
+ {k:'pa',   n:'Plate Appearances',u:'',d:0, dir:'flat'},
+ {k:'ab',   n:'At-Bats',         u:'', d:0, dir:'flat'},
+];
+const MK=Object.fromEntries(M.concat(CM).concat(GM).map(m=>[m.k,m]));
 const CORE=['maxEV','avgEV','hha','sweet','ld','avgLA'];
 const CCORE=['bestPop','avgPop','avgExch','maxVelo','cleanPct','outPct'];
+const GCORE=['avg','obp','ops','h','rbi','kPct'];
+const TRENDDEF={hitting:'maxEV',catching:'avgPop',games:'ops'};
 const KIND={hitting:{label:'Hitting',icon:'⚾',metrics:M,core:CORE,unit:'balls in play'},
-            catching:{label:'Catching',icon:'🧤',metrics:CM,core:CCORE,unit:'throws'}};
-const STYPES={hitting:['Front toss','Machine','Live BP','Tee','Game / scrimmage','Other'],
+            catching:{label:'Catching',icon:'🧤',metrics:CM,core:CCORE,unit:'throws'},
+            games:{label:'Games',icon:'📋',metrics:GM,core:GCORE,unit:'plate appearances'}};
+const STYPES={games:['Game','Doubleheader','Tournament','Scrimmage','Other'],
+  hitting:['Front toss','Machine','Live BP','Tee','Game / scrimmage','Other'],
   catching:['Throw-downs to 2B','Throw-downs to 3B','Mixed bases','Bullpen / receiving','Game / scrimmage','Other']};
 const kindOf=s=>s.kind||'hitting';
 let VIEWKIND='hitting';
@@ -561,6 +584,7 @@ function computeFromThrows(T){
   };
 }
 function sessionStats(s){
+  if(kindOf(s)==='games')return computeGame(s.summary||{});
   if(kindOf(s)==='catching'){
     if(s.mode!=='mixed'&&s.throws&&s.throws.length){const c=computeFromThrows(s.throws); if(c)return c;}
     return s.summary||{};
@@ -617,8 +641,9 @@ function dayOf(parts,kind){
     notes:parts.map(s=>s.notes).filter(Boolean).join(' · '),
     balls, throws};
   // every upload has raw rows -> recompute exactly; otherwise fold the typed summaries together
-  day.summary=allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,HH()))
-                     :mergeSummaries(parts.map(sessionStats),kind);
+  day.summary=kind==='games'?sumGames(parts.map(sessionStats))
+    :(allRows?(kind==='catching'?computeFromThrows(throws):computeFromBalls(balls,HH()))
+             :mergeSummaries(parts.map(sessionStats),kind));
   const pitches=parts.map(s=>num(s.pitch)).filter(v=>v>0);
   day.pitch=allRows?avgPitch(rows):(pitches.length?Math.round(pitches.reduce((a,c)=>a+c,0)/pitches.length):null);
   return day;
@@ -740,7 +765,9 @@ function parseResult(t){ if(t==null)return null; const s=(''+t).toLowerCase().tr
   if(/^[fplgu]?\d(-\d)*$/.test(s))return'out';          // F3, P5, L7, 6-3, 4-6-3, 3
   if(/out|fly|ground|pop|lineout|fc|dp|sac/.test(s))return'out';
   return null;}
+function looksLikeMarkup(txt){return /^\s*<(!doctype|html|\?xml)/i.test(txt||'')}
 function parsePaste(txt){
+  if(looksLikeMarkup(txt))return{balls:[],msg:'That looks like a web page, not a CSV — check the file.',dates:[]};
   const lines=(txt||'').replace(/^﻿/,'').split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
   if(!lines.length)return{balls:[],msg:'Nothing to parse.',dates:[]};
   // HitTrax exports often carry a title/player row or two above the real header,
@@ -807,6 +834,7 @@ function parseOutcome(t){const s=(''+t).toLowerCase().trim();
   if(/^safe\b|^s$|stolen/.test(s))return'safe';
   return null;}
 function parseThrows(txt){
+  if(looksLikeMarkup(txt))return{throws:[],msg:'That looks like a web page, not a CSV — check the file.',dates:[],unmapped:[]};
   const lines=(txt||'').replace(/^﻿/,'').split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
   if(!lines.length)return{throws:[],msg:'Nothing to parse.',dates:[],unmapped:[]};
   let cols=null,delim=null,hdr=-1,bestN=0,heads=[];
@@ -1016,6 +1044,83 @@ function popChart(T){
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}${bars}${marks}
     <text x="${W/2}" y="${H-6}" fill="#6c7fa5" font-size="10" text-anchor="middle">throw order →</text></svg>`;
 }
+/* ============================== games (GameChanger) ==============================
+   The cage tells you what he can do; the box score tells you what he did. Counting stats are
+   typed in (or read off a GameChanger screenshot), everything else is derived the standard way. */
+const GCOUNT=[
+  ['pa','PA'],['ab','AB'],['h','H'],['d','2B'],['t','3B'],['hr','HR'],
+  ['rbi','RBI'],['r','R'],['bb','BB'],['k','K'],['hbp','HBP'],['sf','SF'],
+  ['sb','SB'],['cs','CS'],
+  ['inn','Innings caught'],['pb','Passed balls'],['sba','SB allowed'],['csa','Runners caught']
+];
+function computeGame(c){
+  const n=k=>num(c[k])||0;
+  const ab=n('ab'), h=n('h'), bb=n('bb'), hbp=n('hbp'), sf=n('sf');
+  const pa=n('pa')||(ab+bb+hbp+sf);
+  const singles=Math.max(0,h-n('d')-n('t')-n('hr'));
+  const tb=singles+2*n('d')+3*n('t')+4*n('hr');
+  const onBase=ab+bb+hbp+sf;
+  const thrown=n('csa'), stolen=n('sba');
+  const s={...c, pa, tb, xbh:n('d')+n('t')+n('hr'),
+    avg:ab?h/ab:null, obp:onBase?(h+bb+hbp)/onBase:null, slg:ab?tb/ab:null,
+    kPct:pa?n('k')/pa*100:null, bbPct:pa?bb/pa*100:null,
+    csPct:(thrown+stolen)?thrown/(thrown+stolen)*100:null};
+  s.ops=(s.obp!=null&&s.slg!=null)?s.obp+s.slg:null;
+  return s;
+}
+function sumGames(list){
+  const tot={};
+  GCOUNT.forEach(([k])=>{const v=list.reduce((a,g)=>a+(num(g[k])||0),0); if(v)tot[k]=v});
+  return computeGame(tot);
+}
+/* season to date, plus what the cage says he should be doing */
+function seasonCard(S){
+  const games=S.map(s=>sessionStats(s));
+  if(!games.length)return'';
+  const t=sumGames(games);
+  const tile=(k,label,fmtv,sub)=>`<div class="tile"><div class="k">${label}</div>
+    <div class="v">${fmtv}</div>${sub?`<div class="d flat">${sub}</div>`:''}</div>`;
+  return `<div class="card"><h2>Season to date</h2>
+   <div class="hint">${S.length} game${S.length>1?'s':''} · ${t.pa||0} plate appearance${t.pa===1?'':'s'}</div>
+   <div class="tiles">
+     ${tile('avg','Batting average',avg3(t.avg),`${t.h||0} for ${t.ab||0}`)}
+     ${tile('obp','On-base',avg3(t.obp),`${(t.bb||0)} BB · ${(t.hbp||0)} HBP`)}
+     ${tile('slg','Slugging',avg3(t.slg),`${t.tb||0} total bases`)}
+     ${tile('ops','OPS',avg3(t.ops),t.xbh?`${t.xbh} extra-base hit${t.xbh>1?'s':''}`:'')}
+     ${tile('k','Strikeout rate',t.kPct==null?'—':Math.round(t.kPct)+'%',`${t.k||0} K in ${t.pa||0} PA`)}
+     ${tile('bb','Walk rate',t.bbPct==null?'—':Math.round(t.bbPct)+'%',`${t.bb||0} walk${t.bb===1?'':'s'}`)}
+     ${t.rbi?tile('rbi','RBI',t.rbi,`${t.r||0} run${t.r===1?'':'s'} scored`):''}
+     ${t.csPct!=null?tile('cs','Caught stealing',Math.round(t.csPct)+'%',`${t.csa||0} of ${(t.csa||0)+(t.sba||0)} runners`):''}
+   </div></div>`;
+}
+/* the comparison neither app can show on its own */
+function cageVsGameCard(){
+  const games=DB.sessions.filter(s=>kindOf(s)==='games').map(s=>sessionStats(s));
+  if(!games.length)return'';
+  const t=sumGames(games);
+  const hit=DB.sessions.filter(s=>kindOf(s)==='hitting').flatMap(s=>s.balls||[]);
+  const o=outcomeLine(hit);
+  const st=hit.length?computeFromBalls(hit,HH()):null;
+  const catching=DB.sessions.filter(s=>kindOf(s)==='catching').flatMap(s=>s.throws||[]);
+  const cst=catching.length?computeFromThrows(catching):null;
+  if(!o&&!cst)return'';
+  const row=(label,cage,game,note)=>`<tr><td>${label}</td><td style="font-weight:700">${cage}</td>
+    <td style="font-weight:700">${game}</td><td style="color:var(--dim);white-space:normal">${note}</td></tr>`;
+  let rows='';
+  if(o&&t.avg!=null)rows+=row('Batting average',avg3(o.avg),avg3(t.avg),
+    'Cage AVG is HitTrax simulating a defence — treat the gap as the cost of real pitching and real fielders.');
+  if(o&&t.slg!=null)rows+=row('Slugging',avg3(o.slg),avg3(t.slg),'');
+  if(st&&t.pa)rows+=row('Contact quality',fmt('avgEV',st.avgEV)+' mph avg',
+    (t.kPct!=null?Math.round(t.kPct)+'% K':'—'),'Exit velo only counts when he puts it in play.');
+  if(cst&&t.csPct!=null)rows+=row('Throwing',fmt('bestPop',cst.bestPop)+'s best pop',
+    Math.round(t.csPct)+'% caught',`${t.csa||0} of ${(t.csa||0)+(t.sba||0)} runners in games.`);
+  if(!rows)return'';
+  return `<div class="card"><h2>Cage vs game</h2>
+   <div class="hint">What the HitTrax work says he can do, against what the box score says he did</div>
+   <div class="scroll"><table><thead><tr><th>Measure</th><th>Cage</th><th>Games</th><th></th></tr></thead>
+   <tbody>${rows}</tbody></table></div></div>`;
+}
+
 /* ============================== throw-downs ==============================
    HitTrax gives the pop time and a +/- second differential against the runner, so the runner's
    own time is recoverable: runner = pop - differential. That makes the throw-down animatable as
@@ -1725,7 +1830,7 @@ function go(t){TAB=t;render();window.scrollTo(0,0)}
 function setKind(k){
   VIEWKIND=k; DASHSEL=null;
   const avail=KIND[k].metrics.map(m=>m.k);
-  if(!avail.includes(TRENDK))TRENDK=k==='catching'?'avgPop':'maxEV';
+  if(!avail.includes(TRENDK))TRENDK=TRENDDEF[k];
   if(TAB==='log')LOGKIND=k;
   render();
 }
@@ -1774,18 +1879,19 @@ function backfillBanner(){
     <button class="btn ghost" style="margin-left:auto;padding:5px 11px;font-size:12.5px" onclick="BACKFILLED=0;render()">Dismiss</button></div>`;
 }
 function vDash(){
-  const S=sorted(), cat=VIEWKIND==='catching';
+  const S=sorted(), cat=VIEWKIND==='catching', gm=VIEWKIND==='games';
   if(!S.length)return `<div class="card"><div class="empty">
     <div class="big">${KIND[VIEWKIND].icon}</div><h2>No ${cat?'catching':'hitting'} sessions yet</h2>
-    <p style="color:var(--dim);max-width:460px;margin:8px auto 16px">${cat
-      ?'Upload a HitTrax catching export — pop time, exchange, arm strength and accuracy per throw — or type the session summary.'
-      :'Log a HitTrax session — type in the summary numbers off the report screen, or upload the CSV and everything gets calculated for you.'}</p>
+    <p style="color:var(--dim);max-width:460px;margin:8px auto 16px">${gm
+      ?'Type a game line straight off the GameChanger box score — the slash line, rates and season totals are worked out for you.'
+      :(cat?'Upload a HitTrax catching export — pop time, exchange, arm strength and accuracy per throw — or type the session summary.'
+      :'Log a HitTrax session — type in the summary numbers off the report screen, or upload the CSV and everything gets calculated for you.')}</p>
     <button class="btn" onclick="LOGKIND='${VIEWKIND}';go('log')">Log first session</button>
     ${!session?`<div class="hint" style="margin-top:16px">Already logged sessions on another device?
       <a href="#" onclick="openAccount();return false">Sign in</a> and they'll appear here.</div>`:''}</div></div>`
     + refCard();
   const last=dashPick(), st=sessionStats(last);
-  const b=cat?popBench(DB.player.age):bench(DB.player.age);
+  const b=gm?null:(cat?popBench(DB.player.age):bench(DB.player.age));
   const tiles=KIND[VIEWKIND].core.map(k=>{
     const v=num(st[k]); if(v==null)return'';
     const d=delta(k,last.id); const bs=best(k);
@@ -1807,20 +1913,21 @@ function vDash(){
     ${!cat&&st.gb!=null?'<div style="margin-top:14px"><label>Batted-ball mix</label>'+mixBar(st)+'</div>':''}
     ${cat?popSplit(st):''}
   </div>
-  ${b?(cat?popBenchCard(st,b):benchCard(st,b)):''}
-  ${cat?'':gapsCard(last.balls,last)}
-  ${cat?'':outcomeCard(last.balls||[],'for '+last.date)}
-  ${cat?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
-  ${cat?'':thirdsCard(last.balls||[],'on '+last.date)}
-  ${cat?'':laVeloCard()}
-  ${cat?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
-  ${cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[])}
+  ${gm?seasonCard(S)+cageVsGameCard():''}
+  ${gm?'':(b?(cat?popBenchCard(st,b):benchCard(st,b)):'')}
+  ${(cat||gm)?'':gapsCard(last.balls,last)}
+  ${(cat||gm)?'':outcomeCard(last.balls||[],'for '+last.date)}
+  ${(cat||gm)?'':fieldCard(last.balls||[],'Where they landed','on '+last.date)}
+  ${(cat||gm)?'':thirdsCard(last.balls||[],'on '+last.date)}
+  ${(cat||gm)?'':laVeloCard()}
+  ${(cat||gm)?'':flightCard(last.balls||[],'flt_dash','Flight paths')}
+  ${gm?'':(cat?throwCard(last.throws||[],'thr_dash'):plateCard(last.balls||[]))}
   ${cat?throwBarsCard(last.throws||[]):''}
-  ${cat?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
+  ${(cat||gm)?'':zoneCard(S.flatMap(x=>x.balls||[]),S.length>1?`across ${S.length} sessions`:'in this session')}
   ${coachCard(S)}
-  <div class="card"><h2>${MK[cat?'avgPop':'maxEV'].n} trend</h2>
-    <div class="hint">Solid = each session · dashed blue = 3-session rolling average</div>
-    ${lineChart(series(cat?'avgPop':'maxEV'),cat?'avgPop':'maxEV')}
+  <div class="card"><h2>${MK[TRENDDEF[VIEWKIND]].n} trend</h2>
+    <div class="hint">Solid = each ${gm?'game':'session'} · dashed blue = 3-${gm?'game':'session'} rolling average</div>
+    ${lineChart(series(TRENDDEF[VIEWKIND]),TRENDDEF[VIEWKIND])}
     <div style="margin-top:10px"><button class="btn ghost" onclick="go('trends')">All trends</button></div>
   </div>
   ${pbCard()}`;
@@ -1967,6 +2074,15 @@ function refCard(){
 
 /* ---------- log session ---------- */
 let LOGMODE='detail', LOGKIND='hitting', PARSED=[], PDATES=[], RAW=null, UNMAPPED=[];
+// kept out of the template: a games line has no pitch speed, and an upload reads it from the file
+function pitchField(cat){
+  if(LOGKIND==='games')return'';
+  const label=cat?'Pitch speed in (mph)':'Pitch speed (mph)';
+  const body=LOGMODE==='detail'
+    ?'<div id="pitchAuto" class="auto">Averaged from the file</div>'
+    :'<input type="number" id="f_pitch" step="1" placeholder="optional">';
+  return '<div><label>'+label+'</label>'+body+'</div>';
+}
 function vLog(){
   const today=new Date().toISOString().slice(0,10);
   const cat=LOGKIND==='catching';
@@ -1983,16 +2099,13 @@ function vLog(){
      <div><label>Session type</label><select id="f_type">
        ${STYPES[LOGKIND].map(o=>'<option>'+o+'</option>').join('')}
      </select></div>
-     <div><label>${cat?'Pitch speed in (mph)':'Pitch speed (mph)'}</label>
-       ${LOGMODE==='detail'
-         ?`<div id="pitchAuto" class="auto">Averaged from the file</div>`
-         :`<input type="number" id="f_pitch" step="1" placeholder="optional">`}</div>
-     <div><label>Location</label><input id="f_loc" placeholder="facility / cage"></div>
+     ${pitchField(cat)}
+     <div><label>${LOGKIND==='games'?'Opponent':'Location'}</label><input id="f_loc" placeholder="${LOGKIND==='games'?'who they played':'facility / cage'}"></div>
    </div>
-   <div style="margin-top:14px"><div class="seg">
+   ${LOGKIND==='games'?'':`<div style="margin-top:14px"><div class="seg">
      <button class="${LOGMODE==='detail'?'on':''}" onclick="setMode('detail')">Upload / paste ${cat?'throws':'batted balls'}</button>
      <button class="${LOGMODE==='summary'?'on':''}" onclick="setMode('summary')">Type summary</button>
-   </div></div>
+   </div></div>`}
    <div id="logBody" style="margin-top:14px"></div>
    <div style="margin-top:8px"><label>Notes (what you worked on)</label>
      <textarea id="f_notes" style="min-height:70px" placeholder="${cat?'e.g. worked on the replace-step, kept the glove on the inside half':'e.g. new stride timing, stayed on the fastball, tired last 20 swings'}"></textarea></div>
@@ -2005,6 +2118,18 @@ function setLogKind(k){LOGKIND=k;clearParse();render()}
 function clearParse(){PARSED=[];RAW=null;RAWNAME=null;PDATES=[];UNMAPPED=[]}
 function initLog(){
   const el=document.getElementById('logBody'), cat=LOGKIND==='catching';
+  if(LOGKIND==='games'){
+    el.innerHTML=`<div class="hint" style="margin-bottom:10px">Straight off the GameChanger box score — leave anything blank that
+      doesn't apply. Rates are worked out from these.</div>
+      <label>At the plate</label>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(92px,1fr));margin-bottom:14px">`+
+      GCOUNT.slice(0,14).map(([k,lab])=>`<div><label>${lab}</label><input type="number" min="0" step="1" id="s_${k}"></div>`).join('')+
+      `</div><label>Behind the plate <span class="hint" style="text-transform:none;letter-spacing:0">(skip if he didn't catch)</span></label>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(92px,1fr))">`+
+      GCOUNT.slice(14).map(([k,lab])=>`<div><label>${lab}</label><input type="number" min="0" step="1" id="s_${k}"></div>`).join('')+
+      `</div>`;
+    return;
+  }
   if(LOGMODE==='detail'){
     el.innerHTML=`<div class="drop" id="dropZone">
         <div style="font-size:26px">📄</div>
@@ -2218,7 +2343,7 @@ function saveSession(){
   if(!s.date){alert('Pick a date.');return}
   const pack=(rows)=>Object.assign(cat?{throws:rows,summary:computeFromThrows(rows)}
                         :{balls:rows,summary:computeFromBalls(rows,HH())},{pitch:avgPitch(rows)});
-  if(LOGMODE==='detail'){
+  if(LOGMODE==='detail'&&LOGKIND!=='games'){
     if(!PARSED.length)doParse();
     if(!PARSED.length){alert('Nothing parsed yet — upload a CSV or paste rows, then hit Parse.');return}
     const splitBox=document.getElementById('f_split');
@@ -2237,6 +2362,12 @@ function saveSession(){
       alert(savedMsg(fresh,again)); go('sessions'); return;
     }
     Object.assign(s,pack(PARSED));   // pitch speed comes from the file
+  }else if(LOGKIND==='games'){
+    const sum={}; let any=false;
+    GCOUNT.forEach(([k])=>{const e=document.getElementById('s_'+k); if(!e)return;
+      const v=num(e.value); if(v!=null){sum[k]=v;any=true}});
+    if(!any){alert('Enter at least one number from the box score.');return}
+    s.summary=sum; s.mode='game';
   }else{
     const sum={}; let any=false;
     KIND[LOGKIND].metrics.forEach(m=>{const e=document.getElementById('s_'+m.k); if(!e)return;
@@ -2303,9 +2434,11 @@ function vSessions(){
   const S=sorted().reverse();
   if(!S.length)return '<div class="card"><div class="empty">No sessions logged.</div></div>'+excludedCard();
   const cat=VIEWKIND==='catching';
-  const cols=cat?[['throws','Throws'],['bestPop','Best pop'],['avgPop','Avg pop'],['avgExch','Exchange'],['maxVelo','Max arm'],['onTarget','On target']]
-                :[['swings','BIP'],['maxEV','Max EV'],['avgEV','Avg EV'],['hha','HHA'],['ld','LD%'],['avgLA','Avg LA']];
-  return `<div class="card"><h2>All ${cat?'catching':'hitting'} sessions</h2>
+  const cols=VIEWKIND==='games'
+    ?[['pa','PA'],['h','H'],['avg','AVG'],['obp','OBP'],['slg','SLG'],['rbi','RBI']]
+    :(cat?[['throws','Throws'],['bestPop','Best pop'],['avgPop','Avg pop'],['avgExch','Exchange'],['maxVelo','Max arm'],['onTarget','On target']]
+         :[['swings','BIP'],['maxEV','Max EV'],['avgEV','Avg EV'],['hha','HHA'],['ld','LD%'],['avgLA','Avg LA']]);
+  return `<div class="card"><h2>${VIEWKIND==='games'?'All games':('All '+(cat?'catching':'hitting')+' sessions')}</h2>
   <div class="hint">${S.length} logged · tap a row for the full breakdown</div>
   <div class="scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Pitch</th>${cols.map(c=>'<th>'+c[1]+'</th>').join('')}<th></th></tr></thead><tbody>`+
   S.map(s=>{const st=sessionStats(s);
@@ -2606,7 +2739,7 @@ if(!session)try{EXPIRED=!!localStorage.getItem(DEADTOK)}catch(e){}
 DB=load();
 // open on whichever discipline was logged most recently
 (function(){const last=DB.sessions.slice().sort((a,b)=>a.date<b.date?-1:1).pop();
-  if(last)VIEWKIND=kindOf(last); if(VIEWKIND==='catching')TRENDK='avgPop'; LOGKIND=VIEWKIND;})();
+  if(last)VIEWKIND=kindOf(last); TRENDK=TRENDDEF[VIEWKIND]; LOGKIND=VIEWKIND;})();
 // parser moved on since this data was written? re-read the stored files
 if((DB.parserV||0)!==PARSER_V){
   const n=backfillAll(); DB.parserV=PARSER_V;
