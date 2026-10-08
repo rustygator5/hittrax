@@ -231,7 +231,7 @@ read as current. Arm-care and Pitch Smart items are always about today.
   can't put back a setting changed on the laptop; and every upload first reads and merges the cloud copy,
   so it can't drop a session another device uploaded in between.
 
-## Swings that aren't his
+## Swings (and throws) that aren't his
 Someone else sometimes takes a turn while he's still logged in. Every hitting session's **Details** has a
 **Review swings** list: each ball in order with its clock time, pitch, exit velo, launch angle, distance and
 result, above a strip of exit-velo bars (another hitter's turn usually stands out as its own run of bars), and
@@ -244,6 +244,12 @@ CSV re-applies the removal, and re-uploading the same file still finds the round
 Removing every swing in a round is refused - exclude the round instead. The Sessions list marks rounds with
 "N not his". (Parser v5 reads each swing's clock time from the Date column; older sessions pick it up from
 their stored files on the next load.)
+
+**Catching works the same way:** a catching session's Details has **Review throws** - pop, exchange, arm
+strength, +/- seconds, out/safe call and clean/misfire/no-throw for every rep, a bar strip of arm strength
+(amber = misfire or no throw) and the same pause markers. Removed throws leave his pop-time and arm-strength
+stats, bests, age chart and his weekly **arm-care count**, and survive re-reads and re-uploads. (Parser v6
+reads each throw's clock time.)
 
 ## Throws to third
 HitTrax's catching export doesn't say which base, so the session type does. Rounds typed
@@ -431,7 +437,7 @@ python -m http.server 8776 --directory "C:/Users/user/Documents/HitTrax"
 
 ## Regression tests
 Open `tests.html` (locally at http://localhost:8776/tests.html, or `/hittrax/tests.html` on the live site) — the tab
-title reads `✓ 183/183` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
+title reads `✓ 191/191` when everything passes. It loads the real app as `index.html?test=1`, which uses its own storage
 key (`hittrax.test.v1`), never signs in, never syncs and ignores `#add=` links, and it deletes that key when done, so
 it's safe on a device holding real data. The fixtures are synthetic but use HitTrax's exact export headers; every
 expected number is worked out by hand in the comments. Covers the parsers (dates, decimal commas, scorebook results,

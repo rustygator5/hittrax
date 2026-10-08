@@ -437,6 +437,26 @@ function tests(){
   run(`setCut(__s,[]);`);
   check('Not his','restoring all clears the removal',run(`__s.balls.length===7&&!__s.cut`));
 
+  // throws that aren't his
+  /* first catching row is stamped 19:35:34 -> 19×3600 + 35×60 + 34 = 70534 s */
+  W.__fy=CATCH_CSV;
+  eq('Not his','clock time read for throws too',run(`parseThrows(__fy).throws[0].tm`),70534);
+  fresh();
+  run(`__fid2=storeFile('c.csv',__fy);
+     DB.sessions=[{id:'k1',kind:'catching',date:'2026-09-09',type:'Throw-downs to 2B',mode:'detail',mtime:1,summary:{},throws:parseThrows(__fy).throws,src:{f:__fid2,date:null}}];
+     __k=DB.sessions[0]; __armBefore=armCare().weeks.reduce((a,w)=>a+w.n,0);`);
+  /* remove throws #1 and #5 (pops 2.20 and 2.10): clean reps left 2.40 and 2.50 -> best 2.40;
+     arm-care count (clean + misfire) drops from 5 to 3 */
+  run(`setCut(__k,[0,4]);`);
+  eq('Not his','removed throws leave the round',run(`__k.throws.length+'/'+__k.cut.length`),'4/2');
+  eq('Not his','…and the pop-time stats',run(`sessionStats(__k).bestPop`),2.4);
+  eq('Not his','…and his arm-care count',run(`__armBefore+'→'+armCare().weeks.reduce((a,w)=>a+w.n,0)`),'5→3');
+  check('Not his','a re-read of the stored catching file keeps them removed',run(`(backfillSession(__k),__k.throws.length===4&&__k.cut.map(c=>c.i).join()==='0,4')`));
+  check('Not his','re-uploading the same catching export finds the round',run(`findSameRound('catching','2026-09-09',parseThrows(__fy).throws)===__k`));
+  check('Not his','removed throws survive the sanitizer as throws',run(`(x=>x.cut.length===2&&x.cut[0].b.pop===2.2&&x.throws.length===4)(sanitizeSession(__k))`));
+  run(`setCut(__k,[]);`);
+  check('Not his','restoring all brings every throw back in order',run(`__k.throws.map(t=>t.pop).join()==='2.2,2.4,6.1,0,2.1,2.5'&&!__k.cut`));
+
   // dates
   eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
   check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));
