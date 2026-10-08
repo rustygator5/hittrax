@@ -457,6 +457,15 @@ function tests(){
   run(`setCut(__k,[]);`);
   check('Not his','restoring all brings every throw back in order',run(`__k.throws.map(t=>t.pop).join()==='2.2,2.4,6.1,0,2.1,2.5'&&!__k.cut`));
 
+  // a one-round day can be excluded and brought back
+  fresh();
+  run(`DB.sessions=[{id:'x1',kind:'hitting',date:'2026-10-01',mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},balls:[{ev:50,la:10},{ev:52,la:12}]}];`);
+  check('Exclude','a single round offers Included / Excluded',/This round counts as/.test(run(`roundsTable(DB.sessions[0],'x1')`)));
+  run(`DB.sessions[0].group='out';`);
+  check('Exclude','excluded, it leaves the totals',run(`sorted('hitting').length===0&&excludedOf('hitting').length===1`));
+  run(`DB.sessions[0].group='in';`);
+  check('Exclude','…and comes back',run(`sorted('hitting').length===1`));
+
   // dates
   eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
   check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));

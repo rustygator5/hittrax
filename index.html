@@ -167,7 +167,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.08.2';
+const APP_BUILD='2026.10.08.3';
 // ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
 // so the regression suite can run on the same device as real data without touching it
 const TEST=/[?&]test=1(&|$)/.test(location.search);
@@ -3961,7 +3961,7 @@ function swRemove(){
   for(const p in by){const raw=DB.sessions.find(x=>x.id===parts[p].id); if(!raw)continue;
     const cutAt=new Set((raw.cut||[]).map(c=>c.i));
     const left=fullRows(raw).filter((_,i)=>!cutAt.has(i)&&!by[p].includes(i)).length;
-    if(!left){alert(`That would remove every ${noun} in a round — use "Exclude" on the round instead, so it can be brought back as a whole.`);return}}
+    if(!left){alert(`That would remove every ${noun} in a round — set the round to "Excluded" instead (below this list), so it can be brought back as a whole.`);return}}
   if(!confirm(`Remove ${n} ${noun}${n>1?'s':''} from this session? They come out of every stat and chart, and can be restored from this list.`))return;
   for(const p in by){const raw=DB.sessions.find(x=>x.id===parts[p].id); if(!raw)continue;
     setCut(raw,(raw.cut||[]).map(c=>c.i).concat(by[p]))}
@@ -4023,9 +4023,14 @@ function openSession(id){
 // per round make that obvious, and each round can be grouped, kept separate or excluded.
 function roundsTable(s,id){
   const rounds=roundsOfDate(s), cat=kindOf(s)==='catching';
+  // a one-round day can be excluded too — kept, but out of every total (bring it back from Sessions → Excluded rounds)
   if(rounds.length<2)
-    return `<div class="row" style="margin-top:18px"><button class="btn ghost" onclick="delSession('${esc(id)}')"
-      style="color:var(--red);border-color:rgba(239,77,90,.4)">Delete session</button></div>`;
+    return `<div class="row" style="margin-top:18px;align-items:center;gap:10px">
+      <span class="hint">This round counts as</span>
+      <select class="inline sm" style="max-width:160px" onchange="setGroup('${esc(rounds[0]?rounds[0].id:id)}',this.value)">
+        <option value="in"${dispo(rounds[0]||{})!=='out'?' selected':''}>Included</option>
+        <option value="out"${dispo(rounds[0]||{})==='out'?' selected':''}>Excluded</option></select>
+      <button class="btn ghost" style="margin-left:auto;color:var(--red);border-color:rgba(239,77,90,.4)" onclick="delSession('${esc(id)}')">Delete session</button></div>`;
   const head=cat?['Round','Throws','Pitch in','Avg pop']:['Round','Balls','Avg pitch','Avg EV','Bat speed'];
   return `<div style="margin-top:18px"><label>${rounds.length} rounds logged on ${esc(s.date)}</label>
     <div class="hint" style="margin:-4px 0 8px">Different pitcher or machine setting? Keep that round separate so its
