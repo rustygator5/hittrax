@@ -167,7 +167,7 @@ dialog::backdrop{background:rgba(4,8,16,.7)}
 <script>
 /* ============================== storage ============================== */
 // bump on every deploy — answers "is my phone on the new version?" at a glance
-const APP_BUILD='2026.10.05.10';
+const APP_BUILD='2026.10.08.1';
 // ?test=1 (used by tests.html) runs against its own storage, never signs in and never syncs —
 // so the regression suite can run on the same device as real data without touching it
 const TEST=/[?&]test=1(&|$)/.test(location.search);
@@ -175,7 +175,7 @@ const KEY=TEST?'hittrax.test.v1':'hittrax.tracker.v1';
 const uid=()=> (crypto.randomUUID?crypto.randomUUID():'id'+Date.now()+Math.random().toString(16).slice(2));
 // Bump whenever the parser learns a new column — stored source files are re-read on boot so
 // older rounds pick up whatever the app can now understand.
-const PARSER_V=4;
+const PARSER_V=5;                 // 5: clock time of each swing (for spotting another hitter's turn)
 const blank=()=>({player:{name:'',age:'',level:'',bats:'R'},settings:{hardHit:null},sessions:[],
   files:{},parserV:PARSER_V,deleted:[],goals:[],plans:[],playerAt:0,settingsAt:0,updatedAt:0});
 let DB=blank();
@@ -194,7 +194,7 @@ const SAFE_DATE=/^\d{4}-\d{2}-\d{2}$/;
 const finite=v=>(typeof v==='number'&&isFinite(v))?v:(typeof v==='string'&&v.trim()!==''&&isFinite(+v)?+v:undefined);
 const shortText=(v,max)=>typeof v==='string'?v.slice(0,max):undefined;
 const oneOf=(v,list)=>list.includes(v)?v:undefined;
-const BALL_NUM=['ev','la','dist','horiz','pitch','zone','poix','poiy','poiz','sprayx','sprayz','szbot','sztop','szwidth'];
+const BALL_NUM=['ev','la','dist','horiz','pitch','zone','poix','poiy','poiz','sprayx','sprayz','szbot','sztop','szwidth','tm'];
 const THROW_NUM=['pop','exch','velo','miss','diff','pitch'];
 function cleanRow(r,nums,extra){
   if(!r||typeof r!=='object')return null;
@@ -239,6 +239,9 @@ function sanitizeSession(s){
   const bq=finite(s.bq); if(bq!==undefined&&bq>0.1&&bq<0.35)o.bq=bq;
   if(Array.isArray(s.balls))o.balls=s.balls.slice(0,5000).map(cleanBall).filter(Boolean);
   if(Array.isArray(s.throws))o.throws=s.throws.slice(0,5000).map(cleanThrow).filter(Boolean);
+  if(Array.isArray(s.cut)){const seen=new Set();
+    const c=s.cut.slice(0,5000).map(x=>(x&&Number.isInteger(x.i)&&x.i>=0&&x.i<10000&&!seen.has(x.i)&&(seen.add(x.i),1))?{i:x.i,b:cleanBall(x.b)}:null).filter(x=>x&&x.b);
+    if(c.length)o.cut=c}
   if(Array.isArray(s.okBalls))o.okBalls=s.okBalls.filter(i=>Number.isInteger(i)&&i>=0&&i<5000).slice(0,200);
   if(s.src&&SAFE_ID.test(s.src.f||''))o.src={f:s.src.f,date:SAFE_DATE.test(s.src.date||'')?s.src.date:null};
   return o;
@@ -1144,6 +1147,13 @@ function parseResult(t){ if(t==null)return null; const s=(''+t).toLowerCase().tr
   if(/out|fly|ground|pop|lineout|fc|dp|sac/.test(s))return'out';
   return null;}
 function looksLikeMarkup(txt){return /^\s*<(!doctype|html|\?xml)/i.test(txt||'')}
+// time of day from a date-and-time cell ("10/4/2026 12:58:19.477", "… 1:05 PM") — seconds after midnight
+function clockSecs(raw){
+  const m=String(raw).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*([AaPp][Mm])?/); if(!m)return null;
+  let h=+m[1]; const ap=(m[4]||'').toLowerCase();
+  if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0;
+  return h<24?h*3600+(+m[2])*60+(+(m[3]||0)):null;
+}
 function parsePaste(txt){
   if(looksLikeMarkup(txt))return{balls:[],msg:'That looks like a web page, not a CSV — check the file.',dates:[]};
   const lines=(txt||'').replace(/^﻿/,'').split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length);
@@ -1169,7 +1179,7 @@ function parsePaste(txt){
         else if(c==='btype'){const t=parseBtype(raw); if(t)b.btype=t;}
         else if(c==='poi')b.poi=raw;
         else if(c==='user'||c==='level')b[c]=raw;
-        else if(c==='date'){const d=parseDate(raw); if(d)b.date=d}
+        else if(c==='date'){const d=parseDate(raw); if(d){b.date=d; const t=clockSecs(raw); if(t!=null)b.tm=t}}
         else {const v=numField(raw); if(v!=null)b[c]=v;} });
     }else{
       const nums=parts.map(numField).filter(v=>v!=null);
@@ -3577,7 +3587,7 @@ function roundSig(kind,date,rows){
 }
 function findSameRound(kind,date,rows){
   return DB.sessions.find(s=>kindOf(s)===kind&&s.date===date&&
-    roundSig(kind,s.date,(kind==='catching'?s.throws:s.balls)||[])===roundSig(kind,date,rows));
+    roundSig(kind,s.date,(kind==='catching'?s.throws:fullBalls(s))||[])===roundSig(kind,date,rows));
 }
 /* ---------- stored source files + backfill ---------- */
 const MAXFILE=1200000;                       // ~1.2 MB of CSV is already a huge session
@@ -3636,12 +3646,13 @@ function backfillSession(s){
   let rows=cat?r.throws:r.balls;
   if(!rows.length)return false;
   if(r.dates.length>1&&s.src.date)rows=rows.filter(x=>x.date===s.src.date);
-  const had=((cat?s.throws:s.balls)||[]).length;
+  const had=((cat?s.throws:s.balls)||[]).length+((!cat&&s.cut)?s.cut.length:0);   // count removed swings too
   if(!rows.length||(had&&Math.abs(rows.length-had)>Math.max(2,had*0.1)))return false;  // not the same round
   const before=JSON.stringify(cat?s.throws:s.balls);
   if(cat){s.throws=rows; s.summary=computeFromThrows(rows)}
+  else if(s.cut&&s.cut.length)applyCut(s,rows);        // swings removed as not his stay removed
   else{s.balls=rows; s.summary=computeFromBalls(rows,s.hh||HH(),s.bq||Q(),s.pitch)}
-  const ap=avgPitch(rows); if(ap!=null)s.pitch=ap;
+  const ap=avgPitch(cat?rows:s.balls); if(ap!=null)s.pitch=ap;
   const changed=JSON.stringify(cat?s.throws:s.balls)!==before;
   if(changed)s.mtime=Date.now();
   return changed;
@@ -3672,7 +3683,7 @@ function saveSession(){
         const pitch=s.pitch!=null?s.pitch:(d.pitch!=null?d.pitch:null);
         const src=fid?{f:fid,date:groups.length>1?date:null}:null;
         const dupe=findSameRound(LOGKIND,date,gr.balls);
-        if(dupe){Object.assign(dupe,d,{pitch,mtime:now+i},src?{src}:{});again++}
+        if(dupe){Object.assign(dupe,d,{pitch,mtime:now+i},src?{src}:{}); if(dupe.cut)applyCut(dupe,dupe.balls); again++}
         else{DB.sessions.push({...s,...d,id:uid(),mtime:now+i,pitch,date,src});fresh++}});
       pruneFiles();
       save(); clearParse(); VIEWKIND=LOGKIND;
@@ -3701,7 +3712,7 @@ function saveSession(){
   const rows=LOGMODE==='detail'?PARSED:null;
   if(rows){const fid=storeFile(RAWNAME,RAW!=null?RAW:(g('f_paste')||{}).value); if(fid)s.src={f:fid,date:null}}
   const dupe=rows?findSameRound(LOGKIND,s.date,rows):null;
-  if(dupe){Object.assign(dupe,pack(rows),{mtime:Date.now()},s.src?{src:s.src}:{});
+  if(dupe){Object.assign(dupe,pack(rows),{mtime:Date.now()},s.src?{src:s.src}:{}); if(dupe.cut&&dupe.balls)applyCut(dupe,dupe.balls);
     if(s.notes)dupe.notes=s.notes;
     pruneFiles();
     save(); clearParse(); VIEWKIND=LOGKIND;
@@ -3806,7 +3817,8 @@ function vSessions(){
     cols.map((c,i)=>{const v=num(st[c[0]]);
       return `<td${i===1?' style="font-weight:700"':''}>${v==null?'—':(MK[c[0]].u==='%'?Math.round(v)+'%':fmt(c[0],v))}</td>`}).join('')+
     `<td>${(s.parts&&s.parts.length>1)?`<span class="chip">${s.parts.length} rounds</span>`
-      :(s.mode==='detail'?'<span class="chip">detail</span>':'')}</td></tr>`}).join('')+
+      :(s.mode==='detail'?'<span class="chip">detail</span>':'')}${(()=>{const n=(s.parts||[s]).reduce((a,p)=>a+((p.cut||[]).length),0);
+        return n?` <span class="chip a">${n} not his</span>`:''})()}</td></tr>`}).join('')+
   `</tbody></table></div></div>`+excludedCard();
 }
 // Session type is editable after the fact — HitTrax doesn't record it, so it's guesswork at
@@ -3842,6 +3854,108 @@ function excludedCard(){
 }
 let BACKFILLED=0;
 let OPENID=null;                     // which breakdown is on screen, so edits can refresh it
+/* ---------- swings that aren't his ----------
+   Another hitter sometimes takes a turn while he's still logged in. Those swings are taken out of the
+   round itself (so every stat, chart and best loses them, not just the averages) but kept to one side
+   with their place in the file: s.cut = [{i, b}], i = position in the original export. That lets them
+   be restored, and lets a re-read of the stored CSV or a re-upload re-apply the removal instead of
+   bringing them back. */
+function fullBalls(s){
+  const cut=s.cut||[]; if(!cut.length)return (s.balls||[]).slice();
+  const at=new Map(cut.map(c=>[c.i,c.b])), kept=s.balls||[], out=[]; let k=0;
+  for(let i=0;i<kept.length+cut.length;i++)out.push(at.has(i)?at.get(i):kept[k++]);
+  return out;
+}
+// split a full, in-order ball list into kept and cut using the cut positions on s
+function applyCut(s,full){
+  const okObjs=(s.okBalls||[]).map(i=>(s.balls||[])[i]).filter(Boolean);
+  const set=new Set((s.cut||[]).map(c=>c.i).filter(i=>i<full.length));
+  s.cut=[...set].sort((a,b)=>a-b).map(i=>({i,b:full[i]}));
+  s.balls=full.filter((_,i)=>!set.has(i));
+  if(okObjs.length)s.okBalls=okObjs.map(o=>s.balls.indexOf(o)).filter(i=>i>=0);
+  if(!s.cut.length)delete s.cut;
+  s.summary=computeFromBalls(s.balls,s.hh||HH(),s.bq||Q(),s.pitch)||{};
+  const ap=avgPitch(s.balls); if(ap!=null)s.pitch=ap;
+}
+function setCut(s,positions){
+  const full=fullBalls(s);
+  s.cut=[...new Set(positions)].filter(i=>i>=0&&i<full.length).map(i=>({i,b:full[i]}));
+  applyCut(s,full); s.mtime=Date.now();
+}
+const clockOf=t=>{if(t==null)return'';const h=Math.floor(t/3600),m=Math.floor(t%3600/60),x=Math.floor(t%60);
+  return (h%12||12)+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0')};
+let SWSEL=new Set(), SWLAST=null, SWFOR=null;
+function swingReview(s){
+  const parts=(s.parts||[s]).filter(p=>kindOf(p)==='hitting'&&((p.balls||[]).length||(p.cut||[]).length));
+  if(!parts.length)return'';
+  if(SWFOR!==s.id){SWSEL=new Set(); SWLAST=null; SWFOR=s.id}
+  const removedN=parts.reduce((a,p)=>a+(p.cut||[]).length,0);
+  const blocks=parts.map((p,pi)=>{
+    const full=fullBalls(p), cutAt=new Set((p.cut||[]).map(c=>c.i));
+    const maxEV=Math.max(1,...full.map(b=>+b.ev||0));
+    // exit velo by swing: another hitter's turn usually shows up as its own run of bars
+    const W=Math.max(240,full.length*9), bw=W/full.length;
+    const bars=full.map((b,i)=>{const h=Math.max(2,(+b.ev||0)/maxEV*46), key=pi+':'+i, sel=SWSEL.has(key), gone=cutAt.has(i);
+      return `<rect x="${(i*bw+1).toFixed(1)}" y="${(50-h).toFixed(1)}" width="${Math.max(1,bw-2).toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"
+        fill="${gone?'rgba(147,164,198,.25)':(sel?'#ef4d5a':(SUS.has(b)?'#f2b13c':'#3d6df0'))}"${gone?'':` style="cursor:pointer" onclick="swClick(event,'${key}')"`}><title>#${i+1} · ${(+b.ev).toFixed(1)} mph${b.tm!=null?' · '+clockOf(b.tm):''}${gone?' · removed':''}</title></rect>`}).join('');
+    let prevT=null;
+    const rows=full.map((b,i)=>{const key=pi+':'+i, gone=cutAt.has(i);
+      let gap='';
+      if(b.tm!=null&&prevT!=null&&b.tm-prevT>=120)gap=`<tr><td colspan="9" style="text-align:center;color:var(--amber);font-size:11.5px;font-weight:700">— ${Math.round((b.tm-prevT)/60)} min gap —</td></tr>`;
+      if(b.tm!=null)prevT=b.tm;
+      return gap+`<tr style="${gone?'opacity:.45;text-decoration:line-through':''}${SWSEL.has(key)?';background:rgba(239,77,90,.14)':''}">
+        <td>${gone?'':`<input type="checkbox" ${SWSEL.has(key)?'checked':''} onclick="swClick(event,'${key}')" style="width:auto;margin:0">`}</td>
+        <td>${i+1}</td><td>${b.tm!=null?clockOf(b.tm):''}</td><td>${b.pitch!=null?Math.round(b.pitch):'—'}</td>
+        <td style="font-weight:700">${(+b.ev).toFixed(1)}</td><td>${b.la!=null?(+b.la).toFixed(0)+'°':'—'}</td>
+        <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${esc(b.result||'—')}${SUS.has(b)?' <span class="chip a">misread?</span>':''}</td>
+        <td>${gone?`<button class="btn ghost" style="padding:2px 8px;font-size:11.5px;text-decoration:none" onclick="swRestore('${esc(p.id)}',${i})">Restore</button>`:''}</td></tr>`}).join('');
+    const times=full.map(b=>b.tm).filter(v=>v!=null);
+    return `<div style="margin-top:12px">
+      ${parts.length>1?`<div class="hint" style="font-weight:700">Round ${pi+1}${times.length?` · ${clockOf(Math.min(...times))}–${clockOf(Math.max(...times))}`:''}${p.pitch?` · ${Math.round(p.pitch)} mph pitch`:''} · ${full.length} balls</div>`:''}
+      <div class="scroll"><svg viewBox="0 0 ${W} 52" width="${W}" height="52" style="display:block">${bars}</svg></div>
+      <div class="scroll" style="max-height:300px;margin-top:6px"><table class="mono"><thead><tr><th></th><th>#</th><th>Time</th><th>Pitch</th><th>EV</th><th>LA</th><th>Dist</th><th>Result</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+  }).join('');
+  return `<div style="margin-top:18px"><label>Review swings</label>
+    <div class="hint">Someone else take a turn while he was logged in? Tick their swings — click the first and shift-click the last to grab
+      a run — then remove them. They come out of every stat and chart for this session, and can be restored.
+      Each bar is one ball's exit velo, in order; a long pause shows as a gap.${removedN?` <b>${removedN} removed.</b>`:''}</div>
+    ${blocks}
+    <div class="row" style="margin-top:10px;align-items:center;gap:10px">
+      <button class="btn" ${SWSEL.size?'':'disabled'} onclick="swRemove()">Remove ${SWSEL.size||''} selected — not his</button>
+      ${SWSEL.size?`<button class="btn ghost" onclick="SWSEL=new Set();openSession(OPENID)">Clear selection</button>`:''}</div></div>`;
+}
+function swClick(ev,key){
+  if(ev)ev.stopPropagation();
+  const [p,i]=key.split(':').map(Number);
+  if(ev&&ev.shiftKey&&SWLAST&&SWLAST[0]===p){
+    const a=Math.min(SWLAST[1],i), b=Math.max(SWLAST[1],i);
+    for(let k=a;k<=b;k++)SWSEL.add(p+':'+k);
+  }else{SWSEL.has(key)?SWSEL.delete(key):SWSEL.add(key)}
+  SWLAST=[p,i];
+  openSession(OPENID);
+}
+function swParts(){const s=findSession(OPENID); return s?(s.parts||[s]).filter(p=>kindOf(p)==='hitting'&&((p.balls||[]).length||(p.cut||[]).length)):[]}
+function swRemove(){
+  const parts=swParts(); if(!parts.length||!SWSEL.size)return;
+  const by={}; SWSEL.forEach(k=>{const [p,i]=k.split(':').map(Number); (by[p]=by[p]||[]).push(i)});
+  const n=SWSEL.size;
+  // removing every swing in a round is really excluding the round
+  for(const p in by){const raw=DB.sessions.find(x=>x.id===parts[p].id); if(!raw)continue;
+    const cutAt=new Set((raw.cut||[]).map(c=>c.i));
+    const left=fullBalls(raw).filter((_,i)=>!cutAt.has(i)&&!by[p].includes(i)).length;
+    if(!left){alert('That would remove every swing in a round — use "Exclude" on the round instead, so it can be brought back as a whole.');return}}
+  if(!confirm(`Remove ${n} swing${n>1?'s':''} from this session? They come out of every stat and chart, and can be restored from this list.`))return;
+  for(const p in by){const raw=DB.sessions.find(x=>x.id===parts[p].id); if(!raw)continue;
+    setCut(raw,(raw.cut||[]).map(c=>c.i).concat(by[p]))}
+  SWSEL=new Set(); SWLAST=null;
+  save(); render(); openSession(OPENID);
+}
+function swRestore(id,i){
+  const raw=DB.sessions.find(x=>x.id===id); if(!raw)return;
+  setCut(raw,(raw.cut||[]).map(c=>c.i).filter(x=>x!==i));
+  save(); render(); openSession(OPENID);
+}
 function openSession(id){
   const s=findSession(id); if(!s)return;
   OPENID=id;
@@ -3890,11 +4004,7 @@ function openSession(id){
    ${balls.some(b=>landing(b))?`<div style="margin-top:18px"><label>Spray chart</label>${fieldChart(balls)}</div>`:''}
    ${flightCard(balls,'flt_dlg','Flight paths').replace('<div class="card">','<div style="margin-top:18px">')}
    ${s.notes?`<div style="margin-top:16px"><label>Notes</label><div style="background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:14px">${esc(s.notes)}</div></div>`:''}
-   ${balls.length?`<div style="margin-top:18px"><label>Batted balls (${balls.length})</label><div class="scroll" style="max-height:240px">
-     <table class="mono"><thead><tr><th>#</th><th>EV</th><th>LA</th><th>Dist</th><th>Type</th><th>Result</th></tr></thead><tbody>`+
-     balls.map((b,i)=>`<tr><td>${i+1}</td><td>${(+b.ev).toFixed(1)}</td><td>${b.la!=null?(+b.la).toFixed(0)+'°':'—'}</td>
-       <td>${b.dist!=null?Math.round(b.dist):'—'}</td><td>${((b.btype||bucket(b.la))||'—').toUpperCase()}</td><td>${esc(b.result||'—')}${SUS.has(b)?' <span class="chip a">misread? not counted</span>':''}</td></tr>`).join('')+
-     `</tbody></table></div></div>`:''}
+   ${kindOf(s)==='hitting'?swingReview(s):''}
    ${roundsTable(s,id)}`;
   initFlights();
   if(!dlg.open)dlg.showModal();   // re-rendering an open breakdown must not re-show it

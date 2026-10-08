@@ -413,6 +413,30 @@ function tests(){
        balls:Array.from({length:20},(_,j)=>({ev:45+r+(j%5),la:-5+j*2,pitch:r%2?42:22,horiz:-30+j*3,zone:1+j%13,result:['out','single','double','foul'][j%4]}))}));`);
   check('Speed','cached and uncached renders are identical',run(`(()=>{const out=[];for(const t of ['dash','trends','report']){TAB=t;render();const a=document.getElementById('view').innerHTML;flagSuspects();renderView();out.push(a===document.getElementById('view').innerHTML)}TAB='dash';return out.every(Boolean)})()`));
 
+  // swings that aren't his
+  /* the fixture's first row is stamped 12:58:11 -> 12×3600 + 58×60 + 11 = 46691 s */
+  W.__fx=HIT_CSV;
+  eq('Not his','clock time read from the Date column',run(`parsePaste(__fx).balls[0].tm`),46691);
+  check('Not his','the elapsed Time Stamp column is never taken for a clock time',run(`parsePaste(__fx).balls.every(b=>b.tm>=46691)`));
+  eq('Not his','12-hour times with PM',run(`clockSecs('10/4/2026 1:05:30 PM')`),13*3600+5*60+30);
+  fresh();
+  run(`__fid=storeFile('t.csv',__fx); __p=parsePaste(__fx);
+     DB.sessions=[{id:'n1',kind:'hitting',date:'2026-10-04',mode:'detail',mtime:1,hh:55,bq:0.2,summary:{},balls:__p.balls,src:{f:__fid,date:null}}];
+     __s=DB.sessions[0]; __ev=__s.balls.map(b=>b.ev);`);
+  /* balls 60,50,40,70,55,45,65 (take skipped). Remove #2 and #4 (50, 70): max EV 65, 5 left */
+  run(`setCut(__s,[1,3]);`);
+  eq('Not his','removed swings leave the round',run(`__s.balls.length+'/'+__s.cut.length`),'5/2');
+  eq('Not his','…and every stat',run(`sessionStats(__s).maxEV`),65);
+  eq('Not his','the full round comes back in its original order',run(`fullBalls(__s).map(b=>b.ev)`),[60,50,40,70,55,45,65]);
+  check('Not his','a re-read of the stored file keeps them removed',run(`(backfillSession(__s),__s.balls.length===5&&__s.cut.map(c=>c.i).join()==='1,3')`));
+  check('Not his','re-uploading the same export finds the round instead of duplicating it',run(`findSameRound('hitting','2026-10-04',parsePaste(__fx).balls)===__s`));
+  check('Not his','the removal survives the sanitizer',run(`(x=>x.cut.length===2&&x.cut[0].i===1&&x.balls.length===5)(sanitizeSession(__s))`));
+  run(`__s.okBalls=[4]; __okEV=__s.balls[4].ev; setCut(__s,[3]);`);
+  eq('Not his','restoring one puts it back in place',run(`__s.balls.map(b=>b.ev)`),[60,50,40,55,45,65]);
+  check('Not his','a confirmed-real reading stays confirmed when positions shift',run(`__s.balls[__s.okBalls[0]].ev===__okEV`));
+  run(`setCut(__s,[]);`);
+  check('Not his','restoring all clears the removal',run(`__s.balls.length===7&&!__s.cut`));
+
   // dates
   eq('Dates','local date late in the evening (not tomorrow in UTC)',run(`localDate(new Date(2026,9,5,23,30))`),'2026-10-05');
   check('Dates','test mode uses its own storage key',run(`KEY==='hittrax.test.v1'`));
